@@ -196,7 +196,20 @@ extension NikonCapturePopupState {
         let lock = tabLock(mode)
         let kelvin = kind == .whiteBalance && mode.title == Self.kelvinTab
         let (activate, apply) = activation(mode)
-        let grown: (@Sendable (String) -> [String])? = kelvin ? { Self.kelvinValues($0) } : nil
+        let grown: (@Sendable (String) -> [String])?
+        if kelvin {
+            grown = { (str: String) -> [String] in Self.kelvinValues(str) }
+        } else {
+            grown = nil
+        }
+        let tintValue: CaptureTint?
+        if kind == .whiteBalance && mode.title == Self.tintTab {
+            tintValue = CaptureTint(
+                greenMagenta: tintCells.greenMagenta, amberBlue: tintCells.amberBlue,
+                range: WhiteBalanceTint.cellRange)
+        } else {
+            tintValue = nil
+        }
         return LadderTab(
             label: label(mode), key: .value(mode.index),
             ladder: CaptureLadder(
@@ -204,10 +217,7 @@ extension NikonCapturePopupState {
                 marked: marked(mode), lock: lock),
             detail: mode.detail, activate: activate, applyOnActivate: apply,
             disabled: mode.disabled, setting: setting(mode, options: options, lock: lock),
-            tint: kind == .whiteBalance && mode.title == Self.tintTab
-                ? CaptureTint(
-                    greenMagenta: tintCells.greenMagenta, amberBlue: tintCells.amberBlue,
-                    range: WhiteBalanceTint.cellRange) : nil,
+            tint: tintValue,
             values: grown,
             steps: steps(kelvin: kelvin), stepsHint: stepsHint(kelvin: kelvin))
     }
@@ -294,7 +304,13 @@ extension NikonCapturePopupState {
         "Use the bit-depth buttons beside the codec to switch depth"
 
     func stepsHint(kelvin: Bool) -> String? {
-        kind == .codec ? Self.codecStepsHint : kelvin ? Self.kelvinStepsHint : nil
+        if kind == .codec {
+            return Self.codecStepsHint
+        } else if kelvin {
+            return Self.kelvinStepsHint
+        } else {
+            return nil
+        }
     }
 
     func steps(kelvin: Bool) -> (@Sendable (String) -> (LadderStep, LadderStep)?)? {
