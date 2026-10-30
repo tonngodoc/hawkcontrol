@@ -685,7 +685,6 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
         hapticsEnabled: true,
         keepScreenAwake: true,
         autoRotateFeedEnabled: true,
-        directDownloadOnly: false,
         // The smallest preset is ~320x240 — too little real detail for the focus and exposure
         // assists to read, and most of what a detector finds there is compression structure
         // rather than the lens. Default to the largest stream the body will send; the operator
@@ -697,7 +696,8 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
         commandChrome: DisplayChromeVisibility(),
         photoDisplayChrome: DisplayChromeVisibility(),
         photoCleanChrome: .cleanDefaults,
-        photoCommandChrome: DisplayChromeVisibility()
+        photoCommandChrome: DisplayChromeVisibility(),
+        directDownloadOnly: false
     )
 
     /// Drops unknown and retired assist tool IDs; `nil` when the key is absent.
