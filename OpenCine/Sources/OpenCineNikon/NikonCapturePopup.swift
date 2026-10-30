@@ -196,7 +196,7 @@ extension NikonCapturePopupState {
         let lock = tabLock(mode)
         let kelvin = kind == .whiteBalance && mode.title == Self.kelvinTab
         let (activate, apply) = activation(mode)
-        let grown: (@Sendable (String) -> [String])? = kelvin ? Self.kelvinValues : nil
+        let grown: (@Sendable (String) -> [String])? = kelvin ? { Self.kelvinValues($0) } : nil
         return LadderTab(
             label: label(mode), key: .value(mode.index),
             ladder: CaptureLadder(
