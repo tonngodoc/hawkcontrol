@@ -242,12 +242,12 @@
                 func point(_ angle: Double, _ distance: CGFloat) -> CGPoint {
                     if bottom {
                         return CGPoint(
-                            x: center.x - sin(angle) * distance,
-                            y: center.y + cos(angle) * distance)
+                            x: center.x - CGFloat(sin(angle)) * distance,
+                            y: center.y + CGFloat(cos(angle)) * distance)
                     }
                     return CGPoint(
-                        x: center.x + cos(angle) * distance,
-                        y: center.y + sin(angle) * distance)
+                        x: center.x + CGFloat(cos(angle)) * distance,
+                        y: center.y + CGFloat(sin(angle)) * distance)
                 }
                 func fade(_ delta: Double) -> Double {
                     min(1, max(0, (window - abs(delta)) / (0.3 * window)))

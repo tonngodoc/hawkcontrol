@@ -128,9 +128,6 @@
             refreshGain(screen: screen ?? UIScreen.main)
             let on = enabled ?? isEnabled
             layer.wantsExtendedDynamicRangeContent = on
-            if #available(iOS 26.0, *) {
-                layer.preferredDynamicRange = on ? .high : .automatic
-            }
         }
     }
 

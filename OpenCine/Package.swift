@@ -357,3 +357,9 @@ let package = Package(
         ),
     ]
 )
+
+for target in package.targets {
+    guard target.name != "CKcp" && target.name != "OpenCineAppleObjC" && target.name != "OpenCineJNI" else { continue }
+    target.swiftSettings = [.swiftLanguageMode(.v5)]
+}
+

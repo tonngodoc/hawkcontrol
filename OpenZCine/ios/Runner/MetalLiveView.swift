@@ -267,15 +267,10 @@ final class SuperResolutionModel {
     /// own default resolves off the main actor before any view exists — and because the answer
     /// changes when a download finishes, so it cannot be cached in a `let` like the others.
     nonisolated static var isReady: Bool {
-        #if targetEnvironment(simulator)
-            return false
-        #else
-            guard #available(iOS 26.0, *) else { return false }
-            return probe?.configurationModelStatus == .ready
-        #endif
+        return false
     }
 
-    #if !targetEnvironment(simulator)
+    #if false
         /// A configuration built only to be asked questions — model status, download progress — at
         /// a representative feed size inside the processor's iOS input cap (1440×1080 for video).
         /// The model asset is per-processor, not per-size, so any valid configuration answers for
@@ -299,39 +294,11 @@ final class SuperResolutionModel {
     /// Re-reads the model status. Cheap, and the settings row asks on appearance because a
     /// download can also have been completed by another app on the same device.
     func refresh() {
-        #if !targetEnvironment(simulator)
-            if #available(iOS 26.0, *), let probe = Self.probe {
-                switch probe.configurationModelStatus {
-                case .ready: state = .ready
-                case .downloading:
-                    state = .downloading(
-                        fraction: Double(probe.configurationModelPercentageAvailable))
-                default: state = .needsDownload
-                }
-                return
-            }
-        #endif
         state = .unavailable
     }
 
     /// Starts the download. Only ever called from the operator's tap on the settings row.
     func download() {
-        #if !targetEnvironment(simulator)
-            guard #available(iOS 26.0, *), let probe = Self.probe else { return }
-            guard state == .needsDownload || isFailed else { return }
-            state = .downloading(fraction: Double(probe.configurationModelPercentageAvailable))
-            probe.downloadConfigurationModel { [weak self] error in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if let error {
-                        self.state = .failed(error.localizedDescription)
-                    } else {
-                        self.refresh()
-                    }
-                }
-            }
-            pollProgress()
-        #endif
     }
 
     private var isFailed: Bool {
@@ -371,12 +338,7 @@ final class LiveDenoiseSwitch {
     /// Whether this device can run the filter at all — the same rule the upscaler options follow.
     /// An operator switch that quietly does nothing is worse than no switch.
     static var isSupportedOnThisDevice: Bool {
-        #if targetEnvironment(simulator)
-            return false
-        #else
-            guard #available(iOS 26.0, *) else { return false }
-            return VTTemporalNoiseFilterConfiguration.isSupported
-        #endif
+        return false
     }
 
     var enabled: Bool = UserDefaults.standard.bool(forKey: storageKey) {
