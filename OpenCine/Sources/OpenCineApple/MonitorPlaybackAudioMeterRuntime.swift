@@ -112,11 +112,11 @@
                     writer.ingest(left: left, right: right)
                 }
             )
-            var tap: MTAudioProcessingTap?
+            var tap: Unmanaged<MTAudioProcessingTap>?
             let status = MTAudioProcessingTapCreate(
                 kCFAllocatorDefault, &callbacks, kMTAudioProcessingTapCreationFlag_PostEffects, &tap
             )
-            guard status == noErr, let tap else {
+            guard status == noErr, let tap = tap?.takeRetainedValue() else {
                 Unmanaged.passUnretained(box).release()
                 source.close()
                 onFailure(status)
