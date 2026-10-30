@@ -1,4 +1,4 @@
-#if os(iOS) && !targetEnvironment(simulator)
+#if false
 import CoreImage
 import CoreVideo
 import Foundation
@@ -9,7 +9,7 @@ import os
 import OpenCineAppleObjC
 #endif
 
-#if os(iOS) && !targetEnvironment(simulator)
+#if false
     /// VideoToolbox's low-latency super-resolution scaler as a feed upscaler, sitting between the
     /// bake and the present's fit.
     ///

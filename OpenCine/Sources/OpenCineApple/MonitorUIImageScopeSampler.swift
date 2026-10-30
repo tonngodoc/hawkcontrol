@@ -21,7 +21,7 @@ public enum MonitorImageSampling {
 
     /// One shared context for scope-tap renders, a per-call `CIContext` is an allocator and
     /// GPU-state churn hazard on a repeating path.
-    private static let scopeTapContext = CIContext(options: [.cacheIntermediates: false])
+    nonisolated(unsafe) private static let scopeTapContext = CIContext(options: [.cacheIntermediates: false])
 
     /// Downsamples a `CVPixelBuffer` (e.g. from `AVPlayerItemVideoOutput`) into a small RGBA buffer.
     public static func rgbaBuffer(

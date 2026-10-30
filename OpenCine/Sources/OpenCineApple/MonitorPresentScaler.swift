@@ -359,7 +359,7 @@ public final class MonitorPresentScaler: @unchecked Sendable {
         ) -> MTLTexture { source }
     #endif
 
-    #if os(iOS) && !targetEnvironment(simulator)
+    #if false
         private func encodeSuperResolution(
             from source: MTLTexture, to target: MTLTexture, commandBuffer: MTLCommandBuffer
         ) -> MTLTexture? {

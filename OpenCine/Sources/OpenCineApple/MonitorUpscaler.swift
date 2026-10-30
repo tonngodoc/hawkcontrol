@@ -44,14 +44,7 @@ public enum MonitorUpscaler: String, CaseIterable, Sendable {
         #endif
     }()
 
-    private static let superResolutionSupported: Bool = {
-        #if !os(iOS) || targetEnvironment(simulator)
-            return false
-        #else
-            guard #available(iOS 26.0, *) else { return false }
-            return VTLowLatencySuperResolutionScalerConfiguration.isSupported
-        #endif
-    }()
+    private static let superResolutionSupported: Bool = false
 
     public static func superResolutionInputSize(
         source: (width: Int, height: Int),
