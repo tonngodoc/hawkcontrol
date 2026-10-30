@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- PTP-IP camera sockets stay local. Public requests are Frame.io delivery, a problem
+      report the operator sends, and automatic error reports after consent (both to Sentry). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Camera-AP join: WifiNetworkSpecifier requestNetwork + bindProcessToNetwork. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- isWifiEnabled before join so we fail fast when the radio is off. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Required to hold a WifiLock. Live view is a request/response pull loop and Wi-Fi
+        power save is built for the opposite traffic. See transport/WifiLowLatencyLock.kt. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- startScan before WifiNetworkSpecifier so the system panel can find the AP. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- NSD/Wi-Fi camera discovery: NEARBY_WIFI_DEVICES on 13+ (never used
+        for location — the app only finds its own camera), location below. -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <!-- Below 33 this is what NSD discovery needs. From 33 up, discovery uses
+        NEARBY_WIFI_DEVICES above and this is asked for one narrower job: reading the NAME of the
+        network this device is on, which Android gates behind location because an SSID can be
+        looked up geographically. A camera can be reached from a studio router, a home one and a
+        location's, and the name is the only thing that tells those setups apart — an address
+        cannot, because it changes with the lease. Asked for at the moment a router setup needs
+        naming, never at launch, and a refusal costs the operator nothing but the ability to keep
+        more than one router setup per camera. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Android 12 requires COARSE alongside FINE; approximate is enough for NSD. -->
+    <uses-permission
+        android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="32" />
+    <!-- Rear camera, used only while the operator explicitly opens the local
+      Connection-wizard scanner. OCR stays on device and no frame is stored. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- The scanner is optional: pairing and all other app surfaces remain
+      usable on devices without a camera. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- USB-C tethering is optional hardware: Android's per-device consent is
+      requested only after a compatible PTP interface is physically attached. -->
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+
+    <application
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.OpenZCine">
+        <!-- Shares only ready copies in cacheDir/share/ready. The progressive
+          no-backup cache and the transient share/staging directory never have
+          a provider path, so external apps cannot receive a growing .part. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.media-share"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/media_share_paths" />
+        </provider>
+        <!-- Diagnostics have their own authority and one cache-only ready
+          subtree. Event storage and every other app-private file remain
+          unreachable, and each share receives only a temporary read grant. -->
+        <provider
+            android:name=".diagnostics.DiagnosticsFileProvider"
+            android:authorities="${applicationId}.diagnostics-share"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/diagnostics_share_paths" />
+        </provider>
+        <!-- Sensor-based portrait + landscape (iOS allows Portrait + LandscapeRight;
+          "user" is the closest platform posture: it follows the rotation lock).
+          configChanges keeps the activity (camera session, live feed, glass
+          pipeline) alive across rotation, resize, unfold, dark mode, display
+          size, font scale and game controllers (OpenCine
+          MonitorActivityConfigChanges); the zone map recomputes in compose.
+          ponytail: reverse-landscape also rotates here (Android convention);
+          pinning to one landscape would need a manual OrientationEventListener. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.OpenZCine.Starting"
+            android:screenOrientation="user"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Claim attached PTP cameras (Still Image class / Nikon) so
+              Android routes them to OpenZCine instead of the system MTP
+              handler (com.android.mtp), which otherwise holds the interface
+              open and makes every PTP bulk write fail. The filter also grants
+              this app implicit USB permission for the chosen device. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_device_filter" />
+            <!-- Adobe IMS returns a PKCE authorization code through the custom
+              redirect registered for this Android build. The committed fallback
+              scheme is intentionally unusable by the Frame.io configuration gate;
+              a release is only capable of
+              sign-in after a maintainer supplies an Adobe registration through
+              the ignored/local build configuration documented in frameio-setup. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="${frameioRedirectScheme}"
+                    android:host="${frameioRedirectHost}" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

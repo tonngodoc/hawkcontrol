@@ -1,0 +1,186 @@
+package com.opencapture.openzcine
+
+import com.opencapture.opencine.nikon.LiveFrame
+import com.opencapture.opencine.runtime.MonitorFramePacingStats
+import com.opencapture.opencine.runtime.monitorPumpFramesWithSourceFrame
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+
+class FramePacingStatsTest {
+    private val reports = mutableListOf<String>()
+    private val stats = MonitorFramePacingStats(reportIntervalNanos = 1_000_000_000L, log = reports::add)
+
+    /** One received + presented frame every 40 ms; frame 0 is the window baseline. */
+    private fun presentSteadily(count: Int, decodeNanos: Long = 10_000_000L) {
+        repeat(count) { index ->
+            stats.frameReceived()
+            stats.framePresented(decodeNanos = decodeNanos, nowNanos = index * 40_000_000L)
+        }
+    }
+
+    @Test
+    fun `reports fps and decode times once the interval elapses`() {
+        // Baseline frame + 25 frames over exactly one second.
+        presentSteadily(26)
+        assertEquals(1, reports.size)
+        assertEquals("feed pacing: 25.0 fps | decode avg 10.0 ms max 10.0 ms | present avg 0.0 ms max 0.0 ms | dropped 0/25", reports[0])
+    }
+
+    @Test
+    fun `counts frames conflated away as dropped`() {
+        stats.frameReceived()
+        stats.framePresented(decodeNanos = 0L, nowNanos = 0L) // baseline
+        repeat(50) { stats.frameReceived() }
+        repeat(25) { index ->
+            stats.framePresented(decodeNanos = 5_000_000L, nowNanos = (index + 1) * 40_000_000L)
+        }
+        assertEquals(1, reports.size)
+        assertTrue(reports[0].endsWith("dropped 25/50"), reports[0])
+    }
+
+    @Test
+    fun `window resets after each report`() {
+        // Baseline + two full one-second windows of 25 frames each.
+        presentSteadily(51)
+        assertEquals(2, reports.size)
+        assertTrue(reports[1].contains("25.0 fps"), reports[1])
+    }
+}
+
+class PumpFramesTest {
+    private fun frame(index: Int): LiveFrame =
+        LiveFrame(timestampNanos = index.toLong(), jpegData = byteArrayOf(index.toByte()))
+
+    @Test
+    fun `presents every frame when the consumer keeps up`() = runTest {
+        val source = MutableSharedFlow<LiveFrame>()
+        val presented = mutableListOf<Byte>()
+        val pump = launch {
+            monitorPumpFramesWithSourceFrame(
+                frames = source,
+                stats = MonitorFramePacingStats(log = {}),
+                timestampNanos = { it.timestampNanos },
+                decode = { it.jpegData[0] },
+                present = { _, decoded -> presented.add(decoded) },
+            )
+        }
+        testScheduler.advanceUntilIdle() // subscribe before emitting
+        repeat(5) { index ->
+            source.emit(frame(index))
+            testScheduler.advanceUntilIdle() // consumer keeps up: drains each frame
+        }
+        pump.cancelAndJoin()
+        assertEquals(listOf<Byte>(0, 1, 2, 3, 4), presented)
+    }
+
+    @Test
+    fun `conflates to the latest frame when the consumer lags`() = runTest {
+        val presented = mutableListOf<Byte>()
+        // A burst the consumer never gets between: latest-wins keeps only the
+        // first frame (taken immediately) and the newest one. The drop ledger
+        // itself is covered deterministically in FramePacingStatsTest.
+        monitorPumpFramesWithSourceFrame(
+            frames = (0 until 10).map(::frame).asFlow(),
+            stats = MonitorFramePacingStats(log = {}),
+            timestampNanos = { it.timestampNanos },
+            decode = { it.jpegData[0] },
+            present = { _, decoded -> presented.add(decoded) },
+        )
+        assertEquals(listOf<Byte>(0, 9), presented)
+    }
+
+    @Test
+    fun `skips frames the decoder rejects`() = runTest {
+        val source = MutableSharedFlow<LiveFrame>()
+        val presented = mutableListOf<Byte>()
+        val pump = launch {
+            monitorPumpFramesWithSourceFrame(
+                frames = source,
+                stats = MonitorFramePacingStats(log = {}),
+                timestampNanos = { it.timestampNanos },
+                decode = { frame -> frame.jpegData[0].takeIf { it.toInt() % 2 == 0 } },
+                present = { _, decoded -> presented.add(decoded) },
+            )
+        }
+        testScheduler.advanceUntilIdle()
+        repeat(4) { index ->
+            source.emit(frame(index))
+            testScheduler.advanceUntilIdle()
+        }
+        pump.cancelAndJoin()
+        assertEquals(listOf<Byte>(0, 2), presented)
+    }
+
+    @Test
+    fun `switching sources cancels the old pump cleanly`() = runTest {
+        val firstSource = MutableSharedFlow<LiveFrame>()
+        val presented = mutableListOf<Byte>()
+        val firstPump = launch {
+            monitorPumpFramesWithSourceFrame(
+                frames = firstSource,
+                stats = MonitorFramePacingStats(log = {}),
+                timestampNanos = { it.timestampNanos },
+                decode = { it.jpegData[0] },
+                present = { _, decoded -> presented.add(decoded) },
+            )
+        }
+        testScheduler.advanceUntilIdle()
+        firstSource.emit(frame(1))
+        testScheduler.advanceUntilIdle()
+        // Source switch: the shell cancels the old collector and pumps the new
+        // source (LaunchedEffect keyed on the source does exactly this).
+        firstPump.cancelAndJoin()
+        monitorPumpFramesWithSourceFrame(
+            frames = listOf(frame(10)).asFlow(),
+            stats = MonitorFramePacingStats(log = {}),
+            timestampNanos = { it.timestampNanos },
+            decode = { it.jpegData[0] },
+            present = { _, decoded -> presented.add(decoded) },
+        )
+        assertEquals(listOf<Byte>(1, 10), presented)
+    }
+
+    /**
+     * Age is the number the field reports are about: a feed can hold a steady frame rate while
+     * running a third of a second behind the room, because a stage that keeps up on average can
+     * still be holding a frame waiting its turn. Throughput cannot see that; this can.
+     */
+    @Test
+    fun `reports how far behind the presented frame is`() {
+        val lines = mutableListOf<String>()
+        val stats = MonitorFramePacingStats(reportIntervalNanos = 1_000_000_000L) { lines += it }
+
+        stats.framePresented(decodeNanos = 0L, nowNanos = 0L, ageNanos = 0L) // baseline
+        repeat(25) { index ->
+            stats.framePresented(
+                decodeNanos = 5_000_000L,
+                nowNanos = (index + 1) * 40_000_000L,
+                ageNanos = 120_000_000L,
+            )
+        }
+
+        assertTrue(lines.isNotEmpty())
+        assertTrue(lines.first().contains("age avg 120.0 ms max 120.0 ms"), lines.first())
+    }
+
+    /** A source with no usable stamp reports NO age rather than a fictional zero. */
+    @Test
+    fun `an unstamped source claims no latency at all`() {
+        val lines = mutableListOf<String>()
+        val stats = MonitorFramePacingStats(reportIntervalNanos = 1_000_000_000L) { lines += it }
+
+        stats.framePresented(decodeNanos = 0L, nowNanos = 0L)
+        repeat(25) { index ->
+            stats.framePresented(decodeNanos = 5_000_000L, nowNanos = (index + 1) * 40_000_000L)
+        }
+
+        assertTrue(lines.isNotEmpty())
+        assertTrue(!lines.first().contains("age"), lines.first())
+    }
+}

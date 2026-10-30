@@ -1,0 +1,545 @@
+package com.opencapture.openzcine
+
+import android.content.ContentValues
+import android.content.Context
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import com.opencapture.opencine.appkit.MonitorControlModel
+import com.opencapture.opencine.nikon.NikonOpenCineSession
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.os.Environment
+import android.os.SystemClock
+import android.provider.MediaStore
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.unit.dp
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.opencapture.openzcine.bridge.SwiftCore
+import com.opencapture.opencine.nikon.CameraFocusPoint
+import com.opencapture.opencine.nikon.CameraIdentity
+import com.opencapture.opencine.nikon.CameraRecordingState
+import com.opencapture.opencine.nikon.CameraSession
+import com.opencapture.opencine.nikon.CameraSessionState
+import com.opencapture.opencine.nikon.LiveFocusBox
+import com.opencapture.opencine.nikon.LiveFocusInfo
+import com.opencapture.opencine.nikon.LiveFocusResult
+import com.opencapture.opencine.nikon.LiveFrame
+import com.opencapture.opencine.nikon.LiveFrameSource
+import com.opencapture.monitorui.MonitorAssistTool
+import com.opencapture.monitorui.MonitorGuideAspect
+import com.opencapture.opencine.media.MonitorDesqueezeDirection
+import com.opencapture.opencine.media.MonitorDesqueezePreset
+import com.opencapture.openzcine.settings.OperatorSettings
+import com.opencapture.opencine.cameracontrols.PortraitFeedAspect
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.Collections
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flow
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/** Compose-level AF interaction and truthful semantics coverage over the production monitor. */
+@RunWith(AndroidJUnit4::class)
+class FocusFeedComposeTest {
+    @get:Rule
+    val composeRule = createComposeRule()
+
+    /** SIMULATED twin of the iOS secondary-only AF rendering regression. */
+    @Test
+    fun validSecondaryAFBoxRendersWhenThePrimaryBoxIsInvalid() {
+        val focus = LiveFocusInfo(
+            coordinateWidth = 1_000, coordinateHeight = 500,
+            result = LiveFocusResult.NOT_FOCUSED, subjectDetectionActive = true,
+            trackingAFActive = false, selectedBoxIndex = null,
+            boxes = listOf(
+                LiveFocusBox(centerX = 100, centerY = 100, width = 0, height = 0),
+                LiveFocusBox(centerX = 500, centerY = 250, width = 200, height = 100),
+            ),
+        )
+        composeRule.setContent {
+            val feed = with(LocalDensity.current) {
+                LiveOverlayRect(0f, 0f, 400.dp.toPx(), 200.dp.toPx())
+            }
+            Box(Modifier.size(400.dp, 200.dp)
+                .background(androidx.compose.ui.graphics.Color.Black)
+                .testTag("SIMULATED-secondary-AF")) {
+                CameraFocusOverlay(focus, feed, locked = false, lockProgress = 0f)
+            }
+        }
+        val image = composeRule.onNodeWithTag("SIMULATED-secondary-AF").captureToImage()
+        val pixels = image.toPixelMap()
+        var greenPixels = 0
+        for (y in 0 until pixels.height) for (x in 0 until pixels.width) {
+            val color = pixels[x, y]
+            if (color.green > color.red + 0.125f && color.green > color.blue + 0.125f) greenPixels++
+        }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val proof = File(context.getExternalFilesDir(null), "SIMULATED-secondary-AF.png")
+        proof.outputStream().use { image.asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
+        println("SIMULATED secondary AF green pixels=$greenPixels image=${proof.absolutePath}")
+        assertTrue("The valid secondary AF area must remain visible", greenPixels > 40)
+    }
+
+    /** SIMULATED twin of the original zero-size projection contract on iOS. */
+    @Test
+    fun zeroSizeCameraAFProjectionDrawsNoMarksEvenWhenLocked() {
+        var visible by mutableStateOf(false)
+        val focus = LiveFocusInfo(
+            coordinateWidth = 1_000, coordinateHeight = 500,
+            result = LiveFocusResult.FOCUSED, subjectDetectionActive = true,
+            trackingAFActive = false, selectedBoxIndex = 0,
+            boxes = listOf(
+                LiveFocusBox(centerX = 250, centerY = 250, width = 100, height = 50),
+                LiveFocusBox(centerX = 500, centerY = 100, width = 200, height = 100),
+            ),
+        )
+        composeRule.setContent {
+            val feed = with(LocalDensity.current) {
+                LiveOverlayRect(0f, 0f, (if (visible) 400.dp else 0.dp).toPx(),
+                    (if (visible) 200.dp else 0.dp).toPx())
+            }
+            Box(Modifier.size(400.dp, 200.dp)
+                .background(androidx.compose.ui.graphics.Color.Black)
+                .testTag("SIMULATED-zero-AF"), contentAlignment = Alignment.Center) {
+                CameraFocusOverlay(focus, feed, locked = true, lockProgress = 0f)
+            }
+        }
+        fun greenPixels(): Int {
+            val pixels = composeRule.onNodeWithTag("SIMULATED-zero-AF").captureToImage().toPixelMap()
+            var count = 0
+            for (y in 0 until pixels.height) for (x in 0 until pixels.width) {
+                val color = pixels[x, y]
+                if (color.green > color.red + 0.125f && color.green > color.blue + 0.125f) count++
+            }
+            return count
+        }
+        assertEquals("An empty picture must not paint AF marks or lock glyphs", 0, greenPixels())
+        composeRule.runOnIdle { visible = true }
+        assertTrue("The same fixture must paint when the picture is present", greenPixels() > 40)
+    }
+
+    @Test
+    fun tapLockUnlockAndResetStayOnTheTypedSessionSeam() {
+        setDeviceRotation(ROTATION_LANDSCAPE_LEFT)
+        val session = FocusSession()
+        val source = FocusFrameSource(testJpeg())
+        setMonitor(session, source, "focus-feed-compose-test")
+
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithTag("monitor.system.focusReset").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule
+            .onNodeWithContentDescription(
+                "Live view active. Tap to move focus point; hold to lock its position.",
+            )
+            .assertIsDisplayed()
+        saveDeviceScreenshot("focus-reset-visible-pre-tap.png")
+        composeRule.onNodeWithTag("monitor_live_feed").performTouchInput {
+            down(center)
+            advanceEventTime(50)
+            up()
+        }
+        composeRule.waitUntil(5_000) { session.lastFocusPoint != null }
+        assertEquals(CameraFocusPoint(500, 250), session.lastFocusPoint)
+
+        composeRule.onNodeWithTag("monitor_live_feed").performTouchInput {
+            down(center)
+            advanceEventTime(350)
+            up()
+        }
+        composeRule
+            .onNodeWithContentDescription(
+                "Live view active. Focus point position locked in app.",
+            )
+            .assertIsDisplayed()
+        saveDeviceScreenshot("focus-locked-trailing-reset.png")
+
+        composeRule.onNodeWithTag("monitor_live_feed").performTouchInput {
+            down(center)
+            advanceEventTime(350)
+            up()
+        }
+        assertDisplayMode("Live")
+        composeRule.onNodeWithTag("monitor_live_feed").performTouchInput {
+            down(Offset(center.x, height * 0.2f))
+            advanceEventTime(75)
+            moveBy(Offset(0f, height * 0.6f))
+            advanceEventTime(75)
+            up()
+        }
+        assertDisplayMode("Clean")
+        // The opposite swipe validates that the pointer coroutine uses the latest callback state
+        // after a mode-changing recomposition, rather than its original Live capture.
+        composeRule.onNodeWithTag("monitor_live_feed").performTouchInput {
+            down(Offset(center.x, height * 0.8f))
+            advanceEventTime(75)
+            moveBy(Offset(0f, -height * 0.6f))
+            advanceEventTime(75)
+            up()
+        }
+        assertDisplayMode("Live")
+        composeRule.onNodeWithTag("monitor.system.focusReset").performClick()
+        composeRule.waitUntil(5_000) { session.resetCount == 1 }
+    }
+
+    @Test
+    fun preFrameDispSwipesWorkWhileFocusActionsRemainUnavailable() {
+        setDeviceRotation(ROTATION_LANDSCAPE_LEFT)
+        val session = FocusSession()
+        setMonitor(session, WaitingFrameSource(), "focus-feed-pre-frame-test")
+
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithTag("monitor_live_feed").fetchSemanticsNodes().isNotEmpty()
+        }
+        val feed = composeRule.onNodeWithTag("monitor_live_feed")
+        feed.assert(
+            SemanticsMatcher.keyNotDefined(SemanticsActions.OnLongClick),
+        )
+        feed.performTouchInput {
+            down(center)
+            advanceEventTime(350)
+            up()
+        }
+        composeRule.waitForIdle()
+        assertEquals(null, session.lastFocusPoint)
+
+        feed.performTouchInput {
+            down(Offset(center.x, height * 0.2f))
+            advanceEventTime(75)
+            moveBy(Offset(0f, height * 0.6f))
+            advanceEventTime(75)
+            up()
+        }
+        assertDisplayMode("Clean")
+        saveDeviceScreenshot("af-unavailable-disp-clean.png")
+    }
+
+    @Test
+    fun rapidTapsReachTheSessionLatestWinsBoundary() {
+        setDeviceRotation(ROTATION_LANDSCAPE_LEFT)
+        val session = FocusSession(focusDelayMillis = 250)
+        setMonitor(session, FocusFrameSource(testJpeg()), "focus-feed-rapid-tap-test")
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithTag("monitor.system.focusReset").fetchSemanticsNodes().isNotEmpty()
+        }
+        val feed = composeRule.onNodeWithTag("monitor_live_feed")
+
+        feed.performTouchInput {
+            down(Offset(width * 0.25f, center.y))
+            advanceEventTime(30)
+            up()
+        }
+        feed.performTouchInput {
+            down(Offset(width * 0.75f, center.y))
+            advanceEventTime(30)
+            up()
+        }
+
+        composeRule.waitUntil(5_000) { session.focusPoints.size == 2 }
+    }
+
+    @Test
+    fun secondPointerCancelsDispSwipeWithoutChangingPortraitFitPreference() {
+        setDeviceRotation(ROTATION_PORTRAIT)
+        val session = FocusSession()
+        val settings =
+            setMonitor(session, FocusFrameSource(testJpeg()), "focus-feed-pinch-test")
+        settings.portraitFeedAspect = PortraitFeedAspect.FIT_16X9
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithTag("monitor.system.focusReset").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("monitor_live_feed").performTouchInput {
+            val swipeStart = Offset(center.x, height * 0.2f)
+            val swipeMidpoint = Offset(center.x, height * 0.45f)
+            down(0, swipeStart)
+            advanceEventTime(75)
+            moveTo(0, swipeMidpoint)
+            advanceEventTime(75)
+            down(1, Offset(center.x + 36f, swipeMidpoint.y))
+            moveTo(0, Offset(center.x - 100f, swipeMidpoint.y))
+            moveTo(1, Offset(center.x + 136f, swipeMidpoint.y))
+            advanceEventTime(75)
+            up(1)
+            up(0)
+        }
+
+        // Pinch magnifies the current feed; FIT/FILL remains an explicit operator preference.
+        composeRule.waitForIdle()
+        assertEquals(PortraitFeedAspect.FIT_16X9, settings.portraitFeedAspect)
+        assertDisplayMode("Live")
+        assertEquals(null, session.lastFocusPoint)
+    }
+
+    @Test
+    fun portraitFillFramingRemainsPixelAlignedToTheCroppedFeed() {
+        setDeviceRotation(ROTATION_PORTRAIT)
+        try {
+            val session = FocusSession()
+            val assists = idleNikonAssists()
+            val settings =
+                setMonitor(
+                    session,
+                    FocusFrameSource(testJpeg()),
+                    "focus-feed-ope91-portrait-fill-test",
+                    assists,
+                )
+            settings.portraitFeedAspect = PortraitFeedAspect.FILL
+            composeRule.runOnIdle {
+                assists.shared.apply {
+                    selectedGuides = setOf(MonitorGuideAspect.CINEMA)
+                    syncVisible(
+                        setOf(MonitorAssistTool.GUIDES, MonitorAssistTool.GRID, MonitorAssistTool.CROSS, MonitorAssistTool.DESQ),
+                    )
+                    guideMask = true
+                    setGridOption(thirds = true)
+                    selectDesqueezePreset(MonitorDesqueezePreset.X200)
+                    updateDesqueezeDirection(MonitorDesqueezeDirection.HORIZONTAL)
+                }
+            }
+
+            composeRule.waitUntil(5_000) {
+                composeRule.onAllNodesWithTag("monitor.system.focusReset").fetchSemanticsNodes().isNotEmpty()
+            }
+            composeRule
+                .onNodeWithContentDescription(
+                    "Local framing assists. 1 delivery guide on. " +
+                        "Mask outside selected frames on. Composition grid on. " +
+                        "Centre crosshair on. Horizontal desqueeze 2x. Camera level off. " +
+                        "Camera Grid Display is unchanged.",
+                )
+                .assertIsDisplayed()
+            saveDeviceScreenshot(
+                "portrait-fill-guides-feed-aligned.png",
+                album = "OpenZCine-OPE91",
+            )
+        } finally {
+            setDeviceRotation(ROTATION_LANDSCAPE_LEFT)
+        }
+    }
+
+    private fun setMonitor(
+        session: CameraSession,
+        source: LiveFrameSource,
+        preferencesName: String,
+        assists: NikonAssists = idleNikonAssists(),
+    ): OperatorSettings {
+        check(SwiftCore.isAvailable) { "The device UI pass requires the staged Swift core." }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val settings =
+            OperatorSettings(
+                context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
+            ).also { it.hapticsEnabled.value = false }
+        composeRule.setContent {
+            val scope = rememberCoroutineScope()
+            val common = remember(session) { NikonOpenCineSession(session, scope) }
+            val control = remember(common) { MonitorControlModel(scope).also { it.bind(common) } }
+            OpenZCineTheme {
+                MonitorScreen(
+                    session = session,
+                    commonSession = common,
+                    commonControl = control,
+                    operatorSession = rememberTestOperatorSession(assists, settings),
+                    frameSource = source,
+                    assists = assists,
+                    operatorSettings = settings,
+                )
+            }
+        }
+        return settings
+    }
+
+    private fun saveDeviceScreenshot(
+        name: String,
+        album: String = "OpenZCine-OPE71",
+    ) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val arguments = InstrumentationRegistry.getArguments()
+        if (arguments.getString(SCREENSHOT_ARGUMENT) != "true" &&
+            arguments.getString(OPE91_SCREENSHOT_ARGUMENT) != "true"
+        ) {
+            return
+        }
+        val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+        val values =
+            ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(
+                    MediaStore.Images.Media.RELATIVE_PATH,
+                    "${Environment.DIRECTORY_PICTURES}/$album",
+                )
+            }
+        val resolver = instrumentation.targetContext.contentResolver
+        val output =
+            checkNotNull(
+                resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values),
+            )
+        resolver.openOutputStream(output).use { stream ->
+            checkNotNull(stream)
+            check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, stream))
+        }
+        screenshot.recycle()
+        println("OPE71_SCREENSHOT=$output")
+    }
+
+    private fun setDeviceRotation(rotation: Int) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.uiAutomation.executeShellCommand("wm user-rotation lock $rotation").close()
+        val deadline = SystemClock.uptimeMillis() + 5_000L
+        while (SystemClock.uptimeMillis() < deadline) {
+            val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+            val portrait = screenshot.height > screenshot.width
+            screenshot.recycle()
+            if (portrait == (rotation == ROTATION_PORTRAIT)) return
+            SystemClock.sleep(100L)
+        }
+        error("The hardware display did not reach rotation $rotation.")
+    }
+
+    private fun assertDisplayMode(label: String) {
+        composeRule.waitUntil(5_000) {
+            composeRule
+                .onAllNodesWithTag("monitor_live_feed")
+                .fetchSemanticsNodes()
+                .any {
+                    it.config[SemanticsProperties.StateDescription] ==
+                        "Display mode $label"
+                }
+        }
+        composeRule
+            .onNodeWithTag("monitor_live_feed")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "Display mode $label",
+                ),
+            )
+    }
+
+    private fun testJpeg(): ByteArray {
+        val bitmap = Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(Color.DKGRAY)
+        val output = ByteArrayOutputStream()
+        check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output))
+        bitmap.recycle()
+        return output.toByteArray()
+    }
+
+    private class FocusSession(
+        private val focusDelayMillis: Long = 0,
+    ) : CameraSession {
+        private val mutableState = MutableStateFlow<CameraSessionState>(CameraSessionState.Disconnected)
+        override val state: StateFlow<CameraSessionState> = mutableState
+        override val recordingState: StateFlow<CameraRecordingState> =
+            MutableStateFlow(CameraRecordingState.STANDBY)
+
+        @Volatile var lastFocusPoint: CameraFocusPoint? = null
+        @Volatile var resetCount: Int = 0
+        val focusPoints: MutableList<CameraFocusPoint> =
+            Collections.synchronizedList(mutableListOf())
+
+        override suspend fun connect() {
+            mutableState.value =
+                CameraSessionState.Connected(
+                    CameraIdentity("Test ZR", "NIKON ZR", "FOCUS-TEST"),
+                )
+        }
+
+        override suspend fun setRecording(recording: Boolean) = Unit
+
+        override suspend fun changeAfArea(point: CameraFocusPoint): Boolean {
+            if (focusDelayMillis > 0) delay(focusDelayMillis)
+            focusPoints += point
+            lastFocusPoint = point
+            return true
+        }
+
+        override suspend fun resetFocusPoint() {
+            resetCount += 1
+        }
+
+        override suspend fun disconnect() {
+            mutableState.value = CameraSessionState.Disconnected
+        }
+    }
+
+    private class FocusFrameSource(private val jpeg: ByteArray) : LiveFrameSource {
+        override val frames: Flow<LiveFrame> =
+            flow {
+                while (true) {
+                    emit(
+                        LiveFrame(
+                            timestampNanos = System.nanoTime(),
+                            jpegData = jpeg,
+                            focus =
+                                LiveFocusInfo(
+                                    coordinateWidth = 1_000,
+                                    coordinateHeight = 500,
+                                    result = LiveFocusResult.FOCUSED,
+                                    subjectDetectionActive = false,
+                                    trackingAFActive = false,
+                                    selectedBoxIndex = null,
+                                    boxes =
+                                        listOf(
+                                            LiveFocusBox(
+                                                centerX = 930,
+                                                centerY = 250,
+                                                width = 120,
+                                                height = 80,
+                                            ),
+                                        ),
+                                ),
+                        ),
+                    )
+                    delay(100)
+                }
+            }
+    }
+
+    private class WaitingFrameSource : LiveFrameSource {
+        override val frames: Flow<LiveFrame> =
+            flow {
+                delay(60_000)
+            }
+    }
+
+    private companion object {
+        const val ROTATION_PORTRAIT = 0
+        const val ROTATION_LANDSCAPE_LEFT = 1
+        const val SCREENSHOT_ARGUMENT = "ope71Screenshots"
+        const val OPE91_SCREENSHOT_ARGUMENT = "ope91Screenshots"
+    }
+}

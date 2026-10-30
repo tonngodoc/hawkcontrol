@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenZ Control — Interactive Preview Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Load fonts: Sora (original), Inter, JetBrains Mono, Space Grotesk -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Sora:wght@400;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-app: #08090a;
+    --surface: #151618;
+    --border: rgba(255, 255, 255, 0.1);
+    --accent: #f5a623; /* Nikon Gold/Amber */
+    --accent-red: #e02020;
+    --text-primary: #ffffff;
+    --text-muted: #8d9293;
+    --glass: rgba(18, 19, 21, 0.72);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+  body {
+    background: #0d0f12;
+    color: #e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+
+  /* Top Studio Header */
+  header {
+    background: #111317;
+    border-bottom: 1px solid var(--border);
+    padding: 14px 28px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 100;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand-badge {
+    background: var(--accent);
+    color: #000;
+    font-weight: 800;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+  }
+  .brand-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.2px;
+  }
+
+  /* Main Workspace */
+  .studio-layout {
+    display: flex;
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Sidebar Controls */
+  .control-panel {
+    width: 380px;
+    background: #121418;
+    border-right: 1px solid var(--border);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    overflow-y: auto;
+    z-index: 50;
+  }
+  .section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--accent);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .control-group {
+    background: #181b20;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 14px;
+  }
+
+  /* Font Picker */
+  .font-options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .font-btn {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: #ccc;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .font-btn:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+  .font-btn.active {
+    background: rgba(245, 166, 35, 0.15);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .font-tag {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  /* Button Groups */
+  .toggle-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .action-btn {
+    padding: 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #ddd;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.2s;
+  }
+  .action-btn:hover { background: rgba(255, 255, 255, 0.1); }
+  .action-btn.active {
+    background: #f5a623;
+    border-color: #f5a623;
+    color: #000;
+  }
+
+  /* Stage / Canvas */
+  .stage-area {
+    flex: 1;
+    background: radial-gradient(circle at center, #171a21 0%, #0a0b0e 100%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 30px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Device Simulator (iPhone 15) */
+  .device-wrapper {
+    position: relative;
+    transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  /* iPhone 15 frame */
+  .iphone-frame {
+    position: relative;
+    border-radius: 54px;
+    background: #1e2024;
+    padding: 12px;
+    box-shadow: 0 35px 80px rgba(0, 0, 0, 0.8),
+                inset 0 0 0 2px rgba(255, 255, 255, 0.15),
+                inset 0 0 0 6px #0d0e10;
+    transition: all 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Dimensions */
+  .device-landscape .iphone-frame {
+    width: 860px;
+    height: 410px;
+  }
+  .device-portrait .iphone-frame {
+    width: 410px;
+    height: 860px;
+  }
+
+  .screen {
+    width: 100%;
+    height: 100%;
+    background: #000;
+    border-radius: 44px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Dynamic Island */
+  .dynamic-island {
+    position: absolute;
+    background: #000;
+    border-radius: 30px;
+    z-index: 80;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05);
+    transition: all 0.4s ease;
+  }
+  .device-landscape .dynamic-island {
+    width: 32px;
+    height: 105px;
+    top: 50%;
+    left: 22px;
+    transform: translateY(-50%);
+  }
+  .device-portrait .dynamic-island {
+    width: 105px;
+    height: 30px;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  /* Video Layer */
+  .feed-container {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+    background: #000;
+  }
+
+  /* Simulated Concert Video */
+  .feed-media {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.3s;
+  }
+
+  /* 9:16 Full Screen Crop in Portrait */
+  .mode-fill.device-portrait .feed-media {
+    transform: scale(3.15); /* Zooms 16:9 feed to fill 9:16 tall screen */
+  }
+
+  /* 9:16 Safe Frame Lines in 16:9 */
+  .framing-guide-916 {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    aspect-ratio: 9 / 16;
+    border-left: 2px dashed rgba(245, 166, 35, 0.7);
+    border-right: 2px dashed rgba(245, 166, 35, 0.7);
+    pointer-events: none;
+    z-index: 25;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .show-guides .framing-guide-916 { opacity: 1; }
+
+  /* HUD Overlays */
+  .hud-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 16px 24px;
+  }
+  .hud-layer * { pointer-events: auto; }
+
+  /* Top Bar */
+  .top-hud {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--glass);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px 14px;
+  }
+  .rec-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    font-size: 13px;
+    color: #fff;
+  }
+  .rec-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent-red);
+    animation: blink 1.2s infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.3; } }
+
+  .timecode {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #fff;
+  }
+  .cam-status {
+    display: flex;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* Bottom Controls HUD */
+  .bottom-hud {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--glass);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 10px 18px;
+  }
+  .exposure-tiles {
+    display: flex;
+    gap: 14px;
+  }
+  .tile {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .tile-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .tile-val {
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+  }
+
+  .crop-mode-badge {
+    background: var(--accent);
+    color: #000;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(245, 166, 35, 0.4);
+    transition: transform 0.15s;
+  }
+  .crop-mode-badge:active { transform: scale(0.95); }
+
+  /* Audio Meter */
+  .audio-meter {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+    height: 18px;
+  }
+  .audio-bar {
+    width: 3px;
+    height: 100%;
+    background: #25282e;
+    border-radius: 1px;
+    position: relative;
+    overflow: hidden;
+  }
+  .audio-bar-fill {
+    position: absolute;
+    bottom: 0;
+    width: 100%;
+    background: #2ecc71;
+    height: 70%;
+  }
+
+  /* Dynamic typography classes */
+  .font-sora { font-family: 'Sora', sans-serif !important; }
+  .font-sfpro { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif !important; }
+  .font-inter { font-family: 'Inter', sans-serif !important; }
+  .font-jetbrains { font-family: 'JetBrains Mono', monospace !important; }
+
+  /* Hint Tooltip */
+  .hint-tip {
+    font-size: 12px;
+    line-height: 1.5;
+    color: #9ca3af;
+    background: rgba(245, 166, 35, 0.08);
+    border-left: 3px solid var(--accent);
+    padding: 10px 12px;
+    border-radius: 0 8px 8px 0;
+  }
+</style>
+</head>
+<body class="font-sfpro">
+
+<header>
+  <div class="brand">
+    <div class="brand-badge">OPENZ CONTROL</div>
+    <div class="brand-title">Interactive Live Preview & Typography Studio</div>
+  </div>
+  <div style="font-size: 13px; color: #888;">
+    Mô phỏng hiển thị trên <strong style="color: #fff;">iPhone 15 (Super Retina XDR)</strong>
+  </div>
+</header>
+
+<div class="studio-layout">
+
+  <!-- Left Sidebar Controls -->
+  <aside class="control-panel">
+    
+    <!-- Font Selector -->
+    <div>
+      <div class="section-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+        Chọn Font chữ Monitor
+      </div>
+      <div class="font-options">
+        <div class="font-btn active" onclick="setFont('sfpro', this)">
+          <div>
+            <div style="font-weight: 600;">SF Pro (Apple System)</div>
+            <div style="font-size: 11px; color: #888;">Chuẩn điện ảnh, siêu sạch & tinh tế</div>
+          </div>
+          <span class="font-tag" style="background:#2ecc71; color:#000; font-weight:700;">Đề xuất</span>
+        </div>
+
+        <div class="font-btn" onclick="setFont('inter', this)">
+          <div>
+            <div style="font-weight: 600;">Inter / DIN Pro</div>
+            <div style="font-size: 11px; color: #888;">Phong cách SmallHD & Atomos Ninja</div>
+          </div>
+          <span class="font-tag">Pro Monitor</span>
+        </div>
+
+        <div class="font-btn" onclick="setFont('jetbrains', this)">
+          <div>
+            <div style="font-weight: 600;">JetBrains Mono / SF Mono</div>
+            <div style="font-size: 11px; color: #888;">Sắc nét kiểu ARRI & RED Digital Cinema</div>
+          </div>
+          <span class="font-tag">Monospace</span>
+        </div>
+
+        <div class="font-btn" onclick="setFont('sora', this)">
+          <div>
+            <div style="font-weight: 600;">Sora (Font gốc của app)</div>
+            <div style="font-size: 11px; color: #888;">Font hiện tại của OpenZCine</div>
+          </div>
+          <span class="font-tag" style="color: #e02020;">Gốc</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Orientation & Crop Mode -->
+    <div>
+      <div class="section-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><path d="M12 18h.01"/></svg>
+        Hướng điện thoại & Chế độ Crop
+      </div>
+      <div class="toggle-grid" style="margin-bottom: 8px;">
+        <button class="action-btn active" id="btn-portrait" onclick="setOrientation('portrait')">
+          📱 Dọc (Portrait)
+        </button>
+        <button class="action-btn" id="btn-landscape" onclick="setOrientation('landscape')">
+          🔄 Ngang (16:9)
+        </button>
+      </div>
+
+      <div class="toggle-grid">
+        <button class="action-btn active" id="btn-fill" onclick="setCropMode('fill')">
+          🔍 9:16 Full Screen
+        </button>
+        <button class="action-btn" id="btn-fit" onclick="setCropMode('fit')">
+          ⬛ Fit 16:9 (Letterbox)
+        </button>
+      </div>
+    </div>
+
+    <!-- LUT / Color Look -->
+    <div>
+      <div class="section-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 0 20Z"/></svg>
+        Màu sắc & 3D LUT
+      </div>
+      <div class="toggle-grid">
+        <button class="action-btn active" onclick="setLUT('concert', this)">🔥 Concert Stage</button>
+        <button class="action-btn" onclick="setLUT('rec709', this)">📺 Rec.709 Natural</button>
+        <button class="action-btn" onclick="setLUT('nlog', this)">🌫️ N-Log (Phẳng)</button>
+        <button class="action-btn" onclick="toggleGuides(this)">📐 Lưới 9:16</button>
+      </div>
+    </div>
+
+    <!-- Real-world Workflow Tip -->
+    <div class="hint-tip">
+      💡 <strong>Concert Focus Cam Tip:</strong><br>
+      Máy ảnh Nikon vẫn quay full 16:9 (ProRes/RAW) vào thẻ. Khi xoay điện thoại dọc và chọn <strong>9:16 Full Screen</strong>, app sẽ phóng to vùng nghệ sĩ tràn viền màn hình iPhone 15 để bạn lấy nét siêu chuẩn cho clip TikTok/Reels!
+    </div>
+
+  </aside>
+
+  <!-- Stage Preview Area -->
+  <main class="stage-area">
+    <div class="device-wrapper device-portrait mode-fill show-guides" id="device">
+      <div class="iphone-frame">
+        <div class="screen" id="screen" ondblclick="toggleDoubleTap()">
+          
+          <div class="dynamic-island"></div>
+
+          <!-- Video Layer (Simulated Concert Footage with Artist Focus) -->
+          <div class="feed-container">
+            <svg class="feed-media" id="simulated-feed" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+              <defs>
+                <!-- Stage Lighting Gradients -->
+                <radialGradient id="stageBeam" cx="50%" cy="30%" r="65%">
+                  <stop offset="0%" stop-color="#ff0077" stop-opacity="0.85"/>
+                  <stop offset="45%" stop-color="#4d0082" stop-opacity="0.6"/>
+                  <stop offset="100%" stop-color="#080811" stop-opacity="0.95"/>
+                </radialGradient>
+                <radialGradient id="spotlight" cx="50%" cy="45%" r="35%">
+                  <stop offset="0%" stop-color="#fff8e7" stop-opacity="0.9"/>
+                  <stop offset="70%" stop-color="#f5a623" stop-opacity="0.3"/>
+                  <stop offset="100%" stop-color="transparent"/>
+                </radialGradient>
+              </defs>
+
+              <!-- Stage Background -->
+              <rect width="1920" height="1080" fill="#090a0f"/>
+              <rect width="1920" height="1080" fill="url(#stageBeam)"/>
+              <circle cx="960" cy="480" r="420" fill="url(#spotlight)"/>
+
+              <!-- Stage Beams -->
+              <polygon points="200,0 350,0 800,1080 600,1080" fill="#00d2ff" opacity="0.15"/>
+              <polygon points="1720,0 1570,0 1120,1080 1320,1080" fill="#ff00aa" opacity="0.18"/>
+
+              <!-- The Singer / Artist Silhouette on Focus -->
+              <g transform="translate(960, 520)">
+                <!-- Microphone Stand -->
+                <line x1="-30" y1="60" x2="-30" y2="460" stroke="#777" stroke-width="8"/>
+                <circle cx="-30" cy="60" r="14" fill="#aaa"/>
+
+                <!-- Body / Jacket -->
+                <path d="M-110,480 C-100,260 -70,200 -30,170 C10,200 40,260 50,480 Z" fill="#181822"/>
+                <path d="M-30,170 L-60,250 L-30,230 L0,250 Z" fill="#fff" opacity="0.9"/> <!-- Collar -->
+
+                <!-- Head / Hair -->
+                <ellipse cx="-10" cy="90" rx="46" ry="60" fill="#e5b382"/>
+                <path d="M-60,90 C-60,10 40,10 40,90 C30,40 -40,30 -60,90 Z" fill="#151515"/> <!-- Hair -->
+
+                <!-- Focus Box Indicator (Green Focus Peaking) -->
+                <rect x="-80" y="20" width="140" height="150" fill="none" stroke="#2ecc71" stroke-width="3" stroke-dasharray="14 8"/>
+                <text x="-75" y="15" fill="#2ecc71" font-size="16" font-weight="700">AF-C EYE [96%]</text>
+              </g>
+
+              <!-- Stage Crowd Silhouettes -->
+              <path d="M0,1080 Q300,980 600,1080 Q960,960 1320,1080 Q1600,990 1920,1080 Z" fill="#050508"/>
+            </svg>
+          </div>
+
+          <!-- 9:16 Vertical Safe Frame Guide (visible in 16:9 mode) -->
+          <div class="framing-guide-916"></div>
+
+          <!-- HUD Layer -->
+          <div class="hud-layer">
+            
+            <!-- Top HUD -->
+            <div class="top-hud">
+              <div class="rec-badge">
+                <div class="rec-dot"></div>
+                <span>REC</span>
+              </div>
+
+              <div class="timecode">01:24:58:14</div>
+
+              <div class="cam-status">
+                <span>Nikon ZR</span>
+                <span style="color:#2ecc71;">● 4K 60p</span>
+                <span>BAT 84%</span>
+              </div>
+            </div>
+
+            <!-- Focus Center Crosshair -->
+            <div style="position: absolute; top:50%; left:50%; transform:translate(-50%, -50%); pointer-events:none; opacity:0.6;">
+              <svg width="40" height="40" viewBox="0 0 40 40">
+                <line x1="20" y1="5" x2="20" y2="15" stroke="#fff" stroke-width="2"/>
+                <line x1="20" y1="25" x2="20" y2="35" stroke="#fff" stroke-width="2"/>
+                <line x1="5" y1="20" x2="15" y2="20" stroke="#fff" stroke-width="2"/>
+                <line x1="25" y1="20" x2="35" y2="20" stroke="#fff" stroke-width="2"/>
+                <circle cx="20" cy="20" r="4" fill="none" stroke="#fff" stroke-width="1.5"/>
+              </svg>
+            </div>
+
+            <!-- Bottom HUD -->
+            <div class="bottom-hud">
+              <div class="exposure-tiles">
+                <div class="tile">
+                  <span class="tile-label">SHUTTER</span>
+                  <span class="tile-val">1/120</span>
+                </div>
+                <div class="tile">
+                  <span class="tile-label">IRIS</span>
+                  <span class="tile-val">f/2.8</span>
+                </div>
+                <div class="tile">
+                  <span class="tile-label">ISO</span>
+                  <span class="tile-val">1250</span>
+                </div>
+                <div class="tile">
+                  <span class="tile-label">WB</span>
+                  <span class="tile-val">5600K</span>
+                </div>
+              </div>
+
+              <!-- Audio Indicator -->
+              <div class="audio-meter">
+                <div class="audio-bar"><div class="audio-bar-fill" style="height:65%;"></div></div>
+                <div class="audio-bar"><div class="audio-bar-fill" style="height:78%;"></div></div>
+                <span style="font-size:10px; color:#888; margin-left:4px;">MIC</span>
+              </div>
+
+              <!-- Fast Crop Toggle Badge -->
+              <div class="crop-mode-badge" id="crop-badge" onclick="toggleCropFromHUD()">
+                9:16 FULL
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<script>
+  const device = document.getElementById('device');
+  const feed = document.getElementById('simulated-feed');
+  const cropBadge = document.getElementById('crop-badge');
+
+  function setFont(fontName, element) {
+    document.body.className = 'font-' + fontName;
+    document.querySelectorAll('.font-btn').forEach(btn => btn.classList.remove('active'));
+    element.classList.add('active');
+  }
+
+  function setOrientation(orient) {
+    document.getElementById('btn-portrait').classList.toggle('active', orient === 'portrait');
+    document.getElementById('btn-landscape').classList.toggle('active', orient === 'landscape');
+
+    device.classList.remove('device-portrait', 'device-landscape');
+    device.classList.add('device-' + orient);
+
+    // Update crop badge label
+    updateBadgeLabel();
+  }
+
+  function setCropMode(mode) {
+    document.getElementById('btn-fill').classList.toggle('active', mode === 'fill');
+    document.getElementById('btn-fit').classList.toggle('active', mode === 'fit');
+
+    device.classList.remove('mode-fill', 'mode-fit');
+    device.classList.add('mode-' + mode);
+    updateBadgeLabel();
+  }
+
+  function toggleCropFromHUD() {
+    const isFill = device.classList.contains('mode-fill');
+    setCropMode(isFill ? 'fit' : 'fill');
+  }
+
+  function toggleDoubleTap() {
+    toggleCropFromHUD();
+  }
+
+  function updateBadgeLabel() {
+    const isPortrait = device.classList.contains('device-portrait');
+    const isFill = device.classList.contains('mode-fill');
+    if (!isPortrait) {
+      cropBadge.textContent = '16:9 NATIVE';
+      cropBadge.style.background = '#333';
+      cropBadge.style.color = '#fff';
+    } else if (isFill) {
+      cropBadge.textContent = '9:16 FULL';
+      cropBadge.style.background = '#f5a623';
+      cropBadge.style.color = '#000';
+    } else {
+      cropBadge.textContent = 'FIT 16:9';
+      cropBadge.style.background = '#444';
+      cropBadge.style.color = '#fff';
+    }
+  }
+
+  function setLUT(lut, element) {
+    document.querySelectorAll('.action-btn').forEach(btn => {
+      if (btn.textContent.includes('Concert') || btn.textContent.includes('Rec.709') || btn.textContent.includes('N-Log')) {
+        btn.classList.remove('active');
+      }
+    });
+    element.classList.add('active');
+
+    if (lut === 'concert') {
+      feed.style.filter = 'contrast(1.25) saturate(1.35) brightness(1.05)';
+    } else if (lut === 'rec709') {
+      feed.style.filter = 'contrast(1.1) saturate(1.05) brightness(1.0)';
+    } else if (lut === 'nlog') {
+      feed.style.filter = 'contrast(0.65) saturate(0.55) brightness(1.2)';
+    }
+  }
+
+  function toggleGuides(element) {
+    device.classList.toggle('show-guides');
+    element.classList.toggle('active');
+  }
+</script>
+
+</body>
+</html>

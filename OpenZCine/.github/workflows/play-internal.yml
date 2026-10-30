@@ -1,0 +1,266 @@
+name: Play Internal
+
+# Uploads signed phone + Wear OS bundles to Google Play internal testing tracks.
+# Mirrors TestFlight automation: runs on push to main when Android-relevant paths
+# change, plus manual dispatch and optional android-v* tags.
+# Gated by repository variable PLAY_UPLOAD_ENABLED (must be exactly "true").
+# Prerequisites: docs/android-distribution.md
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "android-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # earlier successful uploads, for the tester notes check
+
+# Never cancel an in-progress upload; queue instead (mirrors testflight.yml).
+concurrency:
+  group: play-internal-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  # versionCode = offset + run number, monotonic across uploads. Raise the offset
+  # if it ever falls behind the highest versionCode in the Play console.
+  ANDROID_VERSION_CODE_OFFSET: "100"
+
+jobs:
+  changes:
+    name: Detect changes
+    # Uploads stay off until the repo variable is explicitly set; the repo-name
+    # guard alone would re-arm on rename.
+    if: >-
+      ${{ github.repository == 'erik-sutton95/openzcine' &&
+          vars.PLAY_UPLOAD_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        id: filter
+        with:
+          # Product paths that affect the Android phone/Wear app. Shared Swift core
+          # is included so protocol/UI parity merges also ship to internal testers.
+          filters: |
+            code:
+              - 'Sources/**'
+              - 'Tests/**'
+              - 'Apps/Android/**'
+              - 'Package.swift'
+              - 'opencine-pins.txt'
+              - '.swift-format'
+              - 'scripts/android-*.sh'
+              - 'scripts/verify-android-*.sh'
+              - 'scripts/ci-install-swift-android.sh'
+              - 'justfile'
+              - '.github/workflows/play-internal.yml'
+
+  play-internal:
+    name: Build & upload
+    needs: changes
+    if: >-
+      github.repository == 'erik-sutton95/openzcine' &&
+      vars.PLAY_UPLOAD_ENABLED == 'true' &&
+      (needs.changes.outputs.code == 'true' ||
+        github.event_name == 'workflow_dispatch' ||
+        startsWith(github.ref, 'refs/tags/android-v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: play
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release ref and version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: ./scripts/android-play-release-guard.sh
+
+      # Candidate (OpenCine CORE-02 + MEDIA-01): OpenCineCore (Gradle), OpenCineMedia and
+      # OpenCineNikon (VENDOR-02, Swift Android core) from ../OpenCine, pinned in
+      # opencine-pins.txt. Delete when the app takes
+      # the published Maven coordinate and SwiftPM url + version.
+      - name: Check out pinned OpenCine packages next to the repository
+        run: scripts/checkout-opencine.sh
+
+      # Release gate for tester notes (docs/ci.md): fail before building when the notes break
+      # the cap or an earlier successful upload already carried them.
+      - name: Tester notes are for this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/android-play-release-notes-check.sh
+          python3 ../OpenCine/scripts/tester-notes-release-check.py --released-by-workflow play-internal.yml \
+            --release-job "Build & upload" --notes Apps/Android/distribution/whatsnew/whatsnew-en-US
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # Gradle caching; the runner's preinstalled Android SDK provides platform/build-tools.
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      # Keep the Play artifact on the exact Swift Android SDK/toolchain that
+      # CI uses. Gradle stages the arm64-v8a core into build output itself.
+      - name: Set up Android NDK 27
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
+        with:
+          ndk-version: r27c
+          link-to-sdk: true
+      - name: Install Swift Android SDK
+        run: ./scripts/ci-install-swift-android.sh
+
+      - name: Run Android checks
+        working-directory: Apps/Android
+        env:
+          SWIFT_ANDROID_SDK_ID: swift-6.3.3-RELEASE_android
+        run: ./gradlew test lint
+
+      - name: Compute version code
+        id: version
+        run: |
+          echo "version_code=$(( ANDROID_VERSION_CODE_OFFSET + GITHUB_RUN_NUMBER ))" >> "$GITHUB_OUTPUT"
+          # The R8 mapping's Sentry ID, bound into the bundle (io.sentry.proguard-uuid) and the upload.
+          echo "SENTRY_PROGUARD_UUID=$(python3 -c 'import uuid; print(uuid.uuid4())')" >> "$GITHUB_ENV"
+
+      # Presence only when symbol upload is on; the DSN's shape is checked by Gradle and the SDK.
+      # OpenCine scripts/sentry, as Pocket and Insta.
+      - name: Require Sentry Android DSN
+        env:
+          SENTRY_UPLOAD_ENABLED: ${{ vars.SENTRY_UPLOAD_ENABLED }}
+          SENTRY_DSN_ANDROID: ${{ secrets.SENTRY_DSN_ANDROID }}
+        run: bash ../OpenCine/scripts/sentry/sentry-require-android-dsn.sh
+
+      - name: Validate release credentials
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          missing=()
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD PLAY_SERVICE_ACCOUNT_JSON; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing 'play' environment secrets: ${missing[*]} (docs/android-distribution.md)."
+            exit 1
+          fi
+          if ! jq -e '
+            .type == "service_account" and
+            (.client_email | type == "string" and length > 0) and
+            (.private_key | type == "string" and length > 0)
+          ' >/dev/null <<< "$PLAY_SERVICE_ACCOUNT_JSON"; then
+            echo "::error::PLAY_SERVICE_ACCOUNT_JSON is not a valid service-account JSON key."
+            exit 1
+          fi
+
+      - name: Decode and inspect upload keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+          keytool -list \
+            -keystore "$RUNNER_TEMP/upload-keystore.jks" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+      - name: Build and verify signed release packages
+        working-directory: Apps/Android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/upload-keystore.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # Optional: without it this build cannot send problem or automatic error reports.
+          SENTRY_DSN_ANDROID: ${{ secrets.SENTRY_DSN_ANDROID }}
+          # Play testing tracks: reports name this build internal, never production.
+          OPC_DISTRIBUTION_CHANNEL: internal
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          SWIFT_ANDROID_SDK_ID: swift-6.3.3-RELEASE_android
+        run: ./gradlew :app:verifyReleaseNativeLibraries :wear:verifyWearReleaseArtifact "-PversionCode=$VERSION_CODE"
+
+      - name: Verify bundle signatures
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/upload-keystore.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          ./scripts/verify-android-bundle-signing.sh \
+            Apps/Android/app/build/outputs/bundle/release/app-release.aab \
+            Apps/Android/wear/build/outputs/bundle/release/wear-release.aab
+
+      # Mapping and native symbols reach openzcine-android before Play gets the bundle. No-op unless
+      # SENTRY_UPLOAD_ENABLED is exactly true; when on, a missing token or symbol fails the release.
+      - name: Upload Sentry debug files
+        env:
+          SENTRY_UPLOAD_ENABLED: ${{ vars.SENTRY_UPLOAD_ENABLED }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_DSN_ANDROID: ${{ secrets.SENTRY_DSN_ANDROID }}
+        run: |
+          set -euo pipefail
+          if [ "${SENTRY_UPLOAD_ENABLED:-}" != "true" ]; then
+            echo "Sentry symbol upload skipped (SENTRY_UPLOAD_ENABLED is not true)."
+            exit 0
+          fi
+          test -s Apps/Android/app/build/outputs/mapping/release/mapping.txt
+          bash ../OpenCine/scripts/sentry/sentry-install.sh --install-dir "${RUNNER_TEMP}/sentry-cli"
+          export PATH="${RUNNER_TEMP}/sentry-cli:${PATH}"
+          python3 ../OpenCine/scripts/sentry/sentry-upload.py --platform android --project openzcine-android
+
+      # r0adkll/upload-google-play over alternatives: Google publishes no official
+      # GitHub Action for Play uploads (its official paths are Gradle Play Publisher
+      # or the raw Publishing API), and this action is the de-facto standard — most
+      # widely used, actively maintained, and a minimal wrapper over the Publishing
+      # API, matching how testflight.yml keeps the upload step thin.
+      - name: Upload to Play internal track
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.opencapture.openzcine
+          releaseFiles: Apps/Android/app/build/outputs/bundle/release/app-release.aab
+          tracks: internal
+          status: completed
+          whatsNewDirectory: Apps/Android/distribution/whatsnew
+          mappingFile: Apps/Android/app/build/outputs/mapping/release/mapping.txt
+
+      - name: Upload to Wear OS internal track
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.opencapture.openzcine
+          releaseFiles: Apps/Android/wear/build/outputs/bundle/release/wear-release.aab
+          tracks: wear:internal
+          status: completed
+          whatsNewDirectory: Apps/Android/distribution/whatsnew
+          mappingFile: Apps/Android/wear/build/outputs/mapping/release/mapping.txt
+
+      - name: Summary
+        run: |
+          {
+            echo "### Play internal upload"
+            echo ""
+            echo "- **Phone version code:** ${{ steps.version.outputs.version_code }}"
+            echo "- **Wear version code:** $((1000000000 + ${{ steps.version.outputs.version_code }}))"
+            echo "- **Commit:** \`${{ github.sha }}\`"
+            echo ""
+            echo "<details><summary>What's new</summary>"
+            echo ""
+            cat Apps/Android/distribution/whatsnew/whatsnew-en-US
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"

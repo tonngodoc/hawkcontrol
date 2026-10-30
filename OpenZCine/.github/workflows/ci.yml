@@ -1,0 +1,575 @@
+name: CI
+
+# Two tiers (docs/ci.md). This is the fast PR tier; its "CI gate" is the one required check.
+# nightly.yml calls it with `full: true`, which runs every job regardless of paths and adds the
+# simulator conformance suite and the iPad storage oracle.
+# A branch push used to start a second run beside its pull request's; run a branch without a pull
+# request through workflow_dispatch.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      full:
+        description: Run every job regardless of paths, plus the nightly-only suites
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read # dorny/paths-filter lists changed PR files via the API
+
+# The workflow name keeps the nightly's call of this file apart from the push run on main.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Cancel only a superseded pull-request run. Main pushes, dispatches and the nightly's call run
+  # to completion (a newer pending main run still replaces an older pending one).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  meta:
+    name: Meta checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Warn when the OpenCine pin is behind
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pin="$(awk '$1 == "OpenCine" { print $2; exit }' opencine-pins.txt)"
+          core_sha="$(git ls-remote https://github.com/erik-sutton95/OpenCine.git refs/heads/main | cut -f1 || true)"
+          if [ -z "$pin" ] || [ -z "$core_sha" ] || [ "$pin" = "$core_sha" ]; then
+            exit 0
+          fi
+          ahead="$(gh api "repos/erik-sutton95/OpenCine/compare/${pin}...${core_sha}" --jq '.ahead_by' 2>/dev/null || true)"
+          if [ -n "$ahead" ] && [ "$ahead" != "0" ]; then
+            echo "::warning::OpenCine pin ${pin:0:7} is ${ahead} commits behind Core main ${core_sha:0:7}"
+          fi
+
+      - name: Repository hygiene
+        run: ./scripts/check-repository-hygiene.sh
+
+      - name: TestFlight notes
+        run: |
+          ./scripts/ios-release-notes-check.sh
+          ./scripts/ios-release-notes-test.sh
+
+      - name: Google Play notes
+        run: ./scripts/android-play-release-notes-check.sh
+
+      - name: CI timing summaries
+        run: python3 scripts/ci-test-timing-test.py
+
+      - name: iOS test recipe options
+        run: ./scripts/ios-test-test.sh
+
+      - name: Swift Android SDK install recovery
+        run: ./scripts/ci-install-swift-android-test.sh
+
+      - name: Spell check
+        uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
+
+      - name: Markdown lint
+        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
+        with:
+          globs: "**/*.md"
+
+      - name: Link check
+        uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2
+        with:
+          args: "--no-progress --offline --exclude-path vendor --exclude-path ref --exclude-path docs/design ."
+          fail: true
+
+      - name: EditorConfig check
+        uses: editorconfig-checker/action-editorconfig-checker@7e30171fc973d78099d7dfc78e27c07d3c4a639f # v2
+        with:
+          # editorconfig-checker v4 renamed its release assets (ec-* → editorconfig-checker-*),
+          # which the v2 action's "latest" lookup cannot find. Pin the last v3 release.
+          version: v3.11.3
+
+      - name: Actionlint
+        # Digest-pinned for reproducibility. Update the version manually when needed. v1.7.12
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: "-color"
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Gitleaks
+        # Digest-pinned for reproducibility. Update the version manually when needed. v8.30.1
+        uses: docker://ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+        with:
+          args: "detect --source=. --redact --no-banner --config=.gitleaks.toml"
+
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      # The pin bot dispatches CI on bot/pin-core after a GITHUB_TOKEN push, which
+      # does not trigger pull_request. Run the shared-core jobs as if the pin changed.
+      # The nightly full suite runs every job.
+      code: ${{ steps.filter.outputs.code == 'true' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'bot/pin-core') || inputs.full }}
+      android: ${{ steps.filter.outputs.android == 'true' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'bot/pin-core') || inputs.full }}
+      bug_relay: ${{ steps.filter.outputs.bug_relay == 'true' || inputs.full }}
+      handbook: ${{ steps.filter.outputs.handbook == 'true' || inputs.full }}
+    steps:
+      # `dorny/paths-filter` fetches the base ref to diff on push / dispatch, which needs the
+      # checkout's git credentials, so this job keeps them (unlike the others). It runs no
+      # repository code, so the token is never exposed to untrusted code.
+      #
+      # On push it runs `git fetch origin <base> <head>`. A head like `bot/pin-core`
+      # (workflow_dispatch on a slash branch) is a git refspec (`bot:pin-core`), so we fetch
+      # the default branch with an explicit refspec and keep enough history that the
+      # merge-base already exists and that fetch is skipped.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Fetch default branch for path filter
+        run: |
+          set -euo pipefail
+          default_branch="${{ github.event.repository.default_branch }}"
+          git fetch --no-tags origin \
+            "refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'Sources/**'
+              - 'Tests/**'
+              - 'ios/**'
+              - 'Package.swift'
+              - 'opencine-pins.txt'
+              - '.swift-format'
+              - 'scripts/add-*.rb'
+              - 'scripts/ios-*.sh'
+              - 'justfile'
+              # Changing how the native job builds must re-run the native job.
+              - '.github/workflows/ci.yml'
+            android:
+              - 'Apps/Android/**'
+              - 'Sources/OpenZCineCore/**'
+              - 'Sources/OpenZCineAndroidFacade/**'
+              - 'Package.swift'
+              - 'opencine-pins.txt'
+              - 'Package.resolved'
+              - 'scripts/android-*.sh'
+              - 'scripts/verify-android-*.sh'
+              - 'scripts/ci-install-swift-android.sh'
+              # Applied to every Android Gradle invocation in CI.
+              - 'scripts/ci-gradle-task-timing.gradle'
+              - 'justfile'
+              # Changing the CI or Play build must re-run the Android job.
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/play-internal.yml'
+            bug_relay:
+              - 'services/bug-relay/**'
+              - 'justfile'
+              - '.github/workflows/ci.yml'
+            handbook:
+              - 'handbook/**'
+              - '.github/workflows/ci.yml'
+
+  native:
+    name: Native Swift/iOS
+    needs: changes
+    # Skip the slow macOS build for docs-only changes; Meta checks still lint the docs.
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    # Hosted macOS: free and unlimited on public repositories, and a fresh VM per job. Never move
+    # this job to a self-hosted runner — it runs `just native-check` from the pull request, so a
+    # fork PR would execute attacker-controlled code on a persistent machine.
+    runs-on: macos-latest
+    # The nightly tier adds the portrait header layout matrix and the iPad storage oracle.
+    timeout-minutes: ${{ inputs.full && 90 || 45 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: latest-stable
+      - name: Install native tooling
+        run: brew install just swift-format || true
+      # Candidate (OpenCine CORE-02 + MEDIA-01): Package.swift (OpenCineMedia, OpenCineNikon) and
+      # ios/Runner.xcodeproj (OpenCineCore + OpenCineMedia) take the OpenCine checkout at
+      # ../OpenCine, pinned by SHA in opencine-pins.txt. Works only once that repository is
+      # published. Delete when the app pins it by url + version.
+      - name: Check out pinned OpenCine packages next to the repository
+        run: scripts/checkout-opencine.sh
+      # OpenCine's shared Sentry release tooling, run against this app's Xcode Cloud archive hook.
+      - name: Sentry release configuration
+        run: just sentry-test
+      # OpenCine's scripts/ios-private-simulator.py: a new iPhone 16 Pro with accessibility enabled in
+      # its own preference store. Its two boots run in the background while the app builds.
+      - name: Start a private iOS test simulator with real accessibility
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-ios"
+          nohup python3 ../OpenCine/scripts/ios-private-simulator.py create \
+            "opc-nikon-native-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --report "$RUNNER_TEMP/native-ios/simulator-setup.json" \
+            > "$RUNNER_TEMP/native-ios/udid" 2> "$RUNNER_TEMP/native-ios/simulator-setup.log" &
+          echo "$!" > "$RUNNER_TEMP/native-ios/simulator-setup.pid"
+      - name: Xcode version for the cache key
+        id: xcode
+        run: echo "version=$(xcodebuild -version | awk 'NR == 1 { print $2 }')" >> "$GITHUB_OUTPUT"
+      # SwiftPM checkouts (not the 2.9 GB sentry-cocoa binary artifact, a quick download) and Xcode's
+      # content-addressed compilation cache, keyed on the package
+      # pins, the OpenCine pin and Xcode. Saved only from main; pull requests read main's.
+      # No workspace-state.json either: it records that artifact as present, so Xcode skips the download.
+      - name: Restore Xcode package and compilation caches
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/ci-dd/SourcePackages/checkouts
+            ~/ci-dd/SourcePackages/repositories
+            ~/ci-dd/CompilationCache.noindex
+            ~/ci-dd/ModuleCache.noindex
+          key: ios-xcode-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios/Runner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'opencine-pins.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ios-xcode-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios/Runner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'opencine-pins.txt') }}-
+            ios-xcode-${{ steps.xcode.outputs.version }}-
+      # The log feeds the per-suite timing table in the job summary.
+      - name: Demo isolation, swift-format and Swift package tests
+        run: |
+          set -euo pipefail
+          just check-demo-isolation swift-check 2>&1 | tee "$RUNNER_TEMP/native-ios/swift-test.log"
+      # One build of the app and its unit tests; every test run below reuses it without building.
+      # Hosted runners are arm64: an x86_64 simulator slice only doubles the compile.
+      - name: Build the app and its tests (iOS Simulator)
+        run: |
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath ~/ci-dd \
+            -skipMacroValidation -skipPackagePluginValidation COMPILATION_CACHE_ENABLE_CACHING=YES ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build-for-testing
+      - name: Wait for the private iOS test simulator
+        run: |
+          pid="$(cat "$RUNNER_TEMP/native-ios/simulator-setup.pid")"
+          while kill -0 "$pid" 2>/dev/null; do sleep 2; done
+          udid="$(tr -d '[:space:]' < "$RUNNER_TEMP/native-ios/udid")"
+          if [ -z "$udid" ]; then
+            cat "$RUNNER_TEMP/native-ios/simulator-setup.log" >&2
+            echo "::error::the private iOS test simulator was not created"
+            exit 1
+          fi
+          echo "IOS_TEST_DEVICE_ID=$udid" >> "$GITHUB_ENV"
+      # Nightly tier: a second private simulator boot (docs/ci.md).
+      - name: Original storage oracle on a private native 2x iPad
+        if: ${{ inputs.full }}
+        env:
+          TEST_RUNNER_CI: "true"
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/native-storage-oracle"
+          mkdir -p "$evidence"
+          udid=""
+          trap 'if [ -n "$udid" ]; then python3 ../OpenCine/scripts/ios-private-simulator.py delete "$udid"; fi' EXIT
+          udid=$(python3 ../OpenCine/scripts/ios-private-simulator.py create \
+            "opc-z-storage-2x-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --device "iPad Pro 11-inch (M4)" --report "$evidence/simulator-setup.json")
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -destination "platform=iOS Simulator,id=$udid" -derivedDataPath ~/ci-dd -parallel-testing-enabled NO \
+            -resultBundlePath "$evidence/storage-oracle.xcresult" \
+            -only-testing:RunnerTests/MonitorPortraitHeaderClearanceTests/testCompactDeclaredGaugeRetainsClearanceWhenSafeTopChanges \
+            test-without-building
+      - name: Retain original storage oracle evidence
+        if: ${{ always() && inputs.full }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-storage-oracle-evidence
+          path: ${{ runner.temp }}/native-storage-oracle
+          retention-days: 7
+          if-no-files-found: error
+      # The portrait header layout matrix (MonitorPortraitHeaderClearanceTests, about eight minutes
+      # hosted) renders the monitor at every size: nightly tier only (docs/ci.md). The quarantined
+      # tests (#467, #531) never run here; the nightly runs them in the next step. Serial:
+      # cloning two parallel simulators took about eight minutes hosted for about ten of test work.
+      - name: Unit tests
+        env:
+          SKIP: ${{ inputs.full && 'MonitorPortraitHeaderClearanceTests/testCompactDeclaredGaugeRetainsClearanceWhenSafeTopChanges' || 'MonitorPortraitHeaderClearanceTests' }}
+          QUARANTINED: >-
+            NikonPlaybackOwnerAdoptionTests
+            NikonMediaOpeningAdmissionTests/testActualBurstCoverKeepsNormalCompanionAndZeroDeletionProgressAboveThePhoto
+            NikonMediaOpeningAdmissionTests/testRetiredVideoCloseReturnsToActualGallery
+            LutPackDownloadLifetimeTests/testProgressCoverRetainsWebOwnerAndDeliversTheArchiveToImport
+        run: |
+          set -euo pipefail
+          skips=("-skip-testing:RunnerTests/$SKIP")
+          for test in $QUARANTINED; do skips+=("-skip-testing:RunnerTests/$test"); done
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -destination "platform=iOS Simulator,id=$IOS_TEST_DEVICE_ID" -derivedDataPath ~/ci-dd \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/native-ios/Runner.xcresult" \
+            "${skips[@]}" test-without-building 2>&1 | tee "$RUNNER_TEMP/native-ios/ios-test.log"
+      # Quarantine (#467, #531): known hosted timing flakes, nightly only and non-blocking.
+      - name: Quarantined hosted-timing tests
+        if: ${{ inputs.full }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -destination "platform=iOS Simulator,id=$IOS_TEST_DEVICE_ID" -derivedDataPath ~/ci-dd \
+            -resultBundlePath "$RUNNER_TEMP/native-ios/Quarantined.xcresult" \
+            -only-testing:RunnerTests/NikonPlaybackOwnerAdoptionTests \
+            -only-testing:RunnerTests/NikonMediaOpeningAdmissionTests/testActualBurstCoverKeepsNormalCompanionAndZeroDeletionProgressAboveThePhoto \
+            -only-testing:RunnerTests/NikonMediaOpeningAdmissionTests/testRetiredVideoCloseReturnsToActualGallery \
+            -only-testing:RunnerTests/LutPackDownloadLifetimeTests/testProgressCoverRetainsWebOwnerAndDeliversTheArchiveToImport \
+            test-without-building 2>&1 | tee "$RUNNER_TEMP/native-ios/ios-quarantined-test.log"
+      - name: Build the Watch companion (watchOS Simulator)
+        run: |
+          xcodebuild -project ios/Runner.xcodeproj -scheme OpenZCineWatch \
+            -destination 'generic/platform=watchOS Simulator' -derivedDataPath ~/ci-dd \
+            -skipMacroValidation -skipPackagePluginValidation COMPILATION_CACHE_ENABLE_CACHING=YES CODE_SIGNING_ALLOWED=NO build
+      - name: Save Xcode package and compilation caches
+        if: ${{ success() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/ci-dd/SourcePackages/checkouts
+            ~/ci-dd/SourcePackages/repositories
+            ~/ci-dd/CompilationCache.noindex
+            ~/ci-dd/ModuleCache.noindex
+          key: ios-xcode-${{ steps.xcode.outputs.version }}-${{ hashFiles('ios/Runner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'opencine-pins.txt') }}-${{ github.sha }}
+      - name: Delete the private iOS test simulator
+        if: always()
+        run: |
+          if [ -n "${IOS_TEST_DEVICE_ID:-}" ]; then
+            python3 ../OpenCine/scripts/ios-private-simulator.py delete "$IOS_TEST_DEVICE_ID"
+          fi
+      - name: Summarize iOS test results
+        if: always()
+        run: |
+          result_bundle="$RUNNER_TEMP/native-ios/Runner.xcresult"
+          if [ -d "$result_bundle" ]; then
+            xcrun xcresulttool get test-results summary --path "$result_bundle" \
+              | tee "$RUNNER_TEMP/native-ios/summary.json"
+          fi
+      # Per-suite timing for the package tests and every iOS unit test run, in the job summary and
+      # the log.
+      # Reporting never decides the verdict; the meta job tests the script.
+      - name: Summarize test timing
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 scripts/ci-test-timing.py swift-testing "$RUNNER_TEMP/native-ios/swift-test.log" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/ci-test-timing.py xcresult "$RUNNER_TEMP/native-ios/Runner.xcresult" \
+            "$RUNNER_TEMP/native-ios/Quarantined.xcresult" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Retain iOS test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-ios-test-evidence
+          path: |
+            ${{ runner.temp }}/native-ios/swift-test.log
+            ${{ runner.temp }}/native-ios/Runner.xcresult
+            ${{ runner.temp }}/native-ios/ios-test.log
+            ${{ runner.temp }}/native-ios/Quarantined.xcresult
+            ${{ runner.temp }}/native-ios/ios-quarantined-test.log
+            ${{ runner.temp }}/native-ios/summary.json
+            ${{ runner.temp }}/native-ios/simulator-setup.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  conformance:
+    name: Shared conformance scenarios, iOS
+    needs: changes
+    # Nightly tier, QUARANTINE (docs/ci.md). Hosted macOS for the same reason as `native`: it
+    # runs code from the pull request.
+    if: ${{ inputs.full && needs.changes.outputs.code == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: latest-stable
+      - name: Install native tooling
+        run: brew install just || true
+      - name: Check out pinned OpenCine packages next to the repository
+        run: scripts/checkout-opencine.sh
+      # OpenCine's scripts/ios-private-simulator.py: a new iPhone 16 Pro with accessibility enabled in
+      # its own preference store only, the setup every app's conformance job shares.
+      - name: Create a private simulator with accessibility enabled
+        run: |
+          mkdir -p "$RUNNER_TEMP/conformance-ios"
+          udid=$(../OpenCine/scripts/ios-private-simulator.py create \
+            "opc-z-conformance-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --report "$RUNNER_TEMP/conformance-ios/simulator-setup.json")
+          echo "CONFORMANCE_DEVICE_ID=$udid" >> "$GITHUB_ENV"
+      - name: Run the shared scenarios and kit suites (RunnerUIReview)
+        run: just conformance-ios "$CONFORMANCE_DEVICE_ID" "$RUNNER_TEMP/conformance-ios/RunnerUIReview.xcresult"
+      - name: Delete the private simulator
+        if: always()
+        run: |
+          if [ -n "${CONFORMANCE_DEVICE_ID:-}" ]; then
+            ../OpenCine/scripts/ios-private-simulator.py delete "$CONFORMANCE_DEVICE_ID"
+          fi
+      - name: Retain conformance evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: conformance-ios-evidence
+          path: ${{ runner.temp }}/conformance-ios
+          retention-days: 7
+          if-no-files-found: warn
+
+  gate:
+    name: CI gate
+    # The single required status check. `native` and `android` are conditional, and a required
+    # check that never reports leaves a pull request blocked forever — so this job always runs and
+    # collapses every other job's result into one verdict. Requiring it is also fail-closed: a pull
+    # request that edits this workflow to drop a job stops reporting `CI gate` and cannot merge.
+    if: always()
+    # The conformance job is nightly-only and quarantined (docs/ci.md): it never feeds the gate.
+    needs: [meta, secrets, changes, native, android, bug-relay, handbook]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require every job to have passed or been deliberately skipped
+        env:
+          # success | failure | cancelled | skipped, one per job in `needs`.
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          for result in $RESULTS; do
+            case "$result" in
+              # `skipped` is legitimate: the paths filter proved the job had nothing to do.
+              success | skipped) ;;
+              *)
+                echo "::error::a CI job reported '$result'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All CI jobs passed or were skipped: $RESULTS"
+
+  android:
+    name: Android (${{ matrix.part }})
+    needs: changes
+    # Skip the Gradle build when nothing under Apps/Android changed.
+    if: ${{ needs.changes.outputs.android == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Three Gradle invocations on parallel runners instead of one serial step. Together they
+    # schedule exactly the task graph of `just android-check` plus the release closure (docs/ci.md);
+    # each stages the Swift core itself. The gate sees one `android` result: failure if any part
+    # fails, so every part stays required.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: JVM tests
+            tasks: test
+          - part: debug build, lint and device-test compile
+            tasks: assembleDebug :app:assembleDebugAndroidTest :wear:assembleDebugAndroidTest lint
+          - part: release closure
+            tasks: :app:verifyReleaseNativeLibraries :wear:verifyWearReleaseArtifact
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      # Gradle caching; the runner's preinstalled Android SDK provides platform/build-tools.
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      # Candidate (OpenCine CORE-02 + MEDIA-01): Apps/Android/settings.gradle.kts includes
+      # ../../../OpenCine/Android and the Swift Android core stages OpenCineMedia and
+      # OpenCineNikon (VENDOR-02) from ../OpenCine, a sibling checkout pinned by SHA in
+      # opencine-pins.txt.
+      - name: Check out pinned OpenCine packages next to the repository
+        run: scripts/checkout-opencine.sh
+
+      # Reuse the SHA-compliant Pocket/Insta setup for Swift 6.3.3 and NDK 27.
+      # The install script configures the API 29 SDK; Gradle stages the core.
+      - name: Set up Android NDK 27
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
+        with:
+          ndk-version: r27c
+          link-to-sdk: true
+      - name: Install Swift Android SDK
+        run: ./scripts/ci-install-swift-android.sh
+
+      - name: Gradle, ${{ matrix.part }}
+        working-directory: Apps/Android
+        env:
+          SWIFT_ANDROID_SDK_ID: swift-6.3.3-RELEASE_android
+          CI_GRADLE_TASK_TIMING: ${{ runner.temp }}/gradle-task-timing.tsv
+          TASKS: ${{ matrix.tasks }}
+        run: |
+          set -euo pipefail
+          read -ra tasks <<< "$TASKS"
+          ./gradlew --init-script ../../scripts/ci-gradle-task-timing.gradle "${tasks[@]}"
+      # Per-task times and, for the JVM tests, per-suite times in the job summary and the log.
+      # Reporting never decides the verdict; the meta job tests the script.
+      - name: Summarize Gradle timing
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 scripts/ci-test-timing.py gradle "$RUNNER_TEMP/gradle-task-timing.tsv" Apps/Android \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+  bug-relay:
+    name: Anonymous bug relay
+    needs: changes
+    if: ${{ needs.changes.outputs.bug_relay == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Validate Worker
+        working-directory: services/bug-relay
+        run: npm run check
+
+  handbook:
+    name: Handbook
+    needs: changes
+    # Build the public Starlight handbook at the base path opencapture.org serves it from.
+    if: ${{ needs.changes.outputs.handbook == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: handbook/package-lock.json
+      - name: Install handbook dependencies
+        working-directory: handbook
+        run: npm ci
+      - name: Build handbook at /openzcine/docs/
+        working-directory: handbook
+        env:
+          ASTRO_TELEMETRY_DISABLED: "1"
+          HANDBOOK_BASE: /openzcine/docs
+        run: npm run build

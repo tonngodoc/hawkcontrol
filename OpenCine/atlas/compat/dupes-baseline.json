@@ -1,0 +1,66 @@
+{
+  "code_lines": {
+    "opencine": 417786,
+    "openinstacine": 40402,
+    "openpocketcine": 56662,
+    "openzcine": 119312
+  },
+  "note": "Written by `atlas dupes --write-baseline` at OpenCine bf961d87 against the registered public-main app commits in sources. The three OpenCine/app pairs rise because the cumulative shared extraction lands before each app removes its donor copies in a reviewed pin move, as allowed by atlas/docs/MAINTENANCE.md; regenerate this baseline after the app changes land.",
+  "pairs": {
+    "opencine|openinstacine": {
+      "block_lines": 1754,
+      "blocks": 121,
+      "exact_files": 0,
+      "file_lines": 0,
+      "files": 0,
+      "lines": 1754
+    },
+    "opencine|openpocketcine": {
+      "block_lines": 1809,
+      "blocks": 129,
+      "exact_files": 0,
+      "file_lines": 14,
+      "files": 1,
+      "lines": 1823
+    },
+    "opencine|openzcine": {
+      "block_lines": 3145,
+      "blocks": 196,
+      "exact_files": 0,
+      "file_lines": 745,
+      "files": 7,
+      "lines": 3890
+    },
+    "openinstacine|openpocketcine": {
+      "block_lines": 8198,
+      "blocks": 505,
+      "exact_files": 2,
+      "file_lines": 1638,
+      "files": 36,
+      "lines": 9836
+    },
+    "openinstacine|openzcine": {
+      "block_lines": 190,
+      "blocks": 17,
+      "exact_files": 0,
+      "file_lines": 394,
+      "files": 2,
+      "lines": 584
+    },
+    "openpocketcine|openzcine": {
+      "block_lines": 498,
+      "blocks": 34,
+      "exact_files": 0,
+      "file_lines": 25,
+      "files": 1,
+      "lines": 523
+    }
+  },
+  "schema_version": 1,
+  "sources": {
+    "opencine": "working tree at bf961d87fa5a71f5574a9f206212443c0838cebe",
+    "openinstacine": "main cd6c86f02e675ab2e76c0a5d8b177b458b961a37",
+    "openpocketcine": "main 5e57d277cb301a846de9f0a2c0e97b217f6acffc",
+    "openzcine": "main f4b8c734cfc0b7d814fdd10015c6825fb602e8a8"
+  }
+}

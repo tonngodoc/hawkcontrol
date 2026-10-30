@@ -1,0 +1,7 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+# Android Adobe IMS / Frame.io public-client registration. The app deliberately
+# ships unconfigured without this local file; see docs/frameio-setup.md.
+frameio.local.properties

@@ -1,0 +1,371 @@
+package com.opencapture.openzcine.relay
+
+import com.opencapture.opencine.nikonwire.MonitorRelayWire
+
+import com.opencapture.opencine.core.CameraCommandIntent
+import com.opencapture.opencine.core.CommandFailure
+import com.opencapture.opencine.core.CommandRejection
+import com.opencapture.opencine.core.CommandStage
+import com.opencapture.opencine.core.SessionCloseReason
+import com.opencapture.opencine.nikon.CameraRecordingException
+import com.opencapture.opencine.nikon.NikonOpenCineSession
+import com.opencapture.openzcine.core.MonitorDataAvailability
+import com.opencapture.openzcine.updateMonitorAuthority
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
+
+/**
+ * The jpeg-only codec negotiation, over a real loopback socket against the wire encoder:
+ * a seeded (persisted) latch must reach the FIRST hello of a fresh controller — not only a
+ * rejoin after an in-process demote — and an HEVC stream nothing decodes must demote within
+ * the bounded deadline instead of the decoder-exhaustion path's tens of seconds. Off-device
+ * `MediaCodec` construction throws, which the frame source swallows into "fed, decoded
+ * nothing" — exactly the black-feed shape the deadline exists to bound.
+ *
+ * ...and the control-holder's record press, which reaches the host as a command over that same
+ * socket. Nothing on this path may ask for a camera session or an operator's confirmation: a
+ * watcher has neither, and the answer it does give was already given on its own screen.
+ */
+class RelayWatchControllerTest {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    @BeforeTest
+    fun resetLatch() {
+        RelayWatchController.resetJpegOnlyForTesting()
+    }
+
+    @AfterTest
+    fun tearDown() {
+        RelayWatchController.resetJpegOnlyForTesting()
+        scope.cancel()
+    }
+
+    @Test
+    fun `a seeded latch declares jpeg-only in the very first hello`() {
+        LoopbackRelayHost().use { host ->
+            RelayWatchController.seedJpegOnly()
+            val controller = controller(host)
+            controller.start()
+            val (_, hello) = host.acceptHello()
+            assertEquals(listOf("jpeg"), hello.codecs)
+            runBlocking { controller.stop() }
+        }
+    }
+
+    @Test
+    fun `an unseeded first hello declares no codec cap`() {
+        LoopbackRelayHost().use { host ->
+            val controller = controller(host)
+            controller.start()
+            val (_, hello) = host.acceptHello()
+            assertNull(hello.codecs)
+            runBlocking { controller.stop() }
+        }
+    }
+
+    @Test
+    fun `a failed migration still sends the saved short passcode in the first hello`() {
+        val rig = RelayPasscodesTest.Rig("abc")
+        rig.secure.writesSucceed = false
+        rig.watchers.values["Loopback host"] = "abc"
+        LoopbackRelayHost().use { host ->
+            val controller = controller(host, passcodes = rig.passcodes)
+            controller.start()
+            val (_, hello) = host.acceptHello()
+            assertEquals("abc", hello.passcode)
+            assertEquals("abc", rig.watchers.values["Loopback host"])
+            runBlocking { controller.stop() }
+        }
+    }
+
+    @Test
+    fun `undecodable hevc latches within the deadline and rejoins jpeg-only`() {
+        LoopbackRelayHost().use { host ->
+            val latched = CountDownLatch(1)
+            val controller =
+                controller(host, deadlineMillis = 300L, onLatched = latched::countDown)
+            controller.start()
+            val (socket, hello) = host.acceptHello()
+            assertNull(hello.codecs)
+            host.send(
+                socket,
+                MonitorRelayWire.Kind.HELLO,
+                MonitorRelayWire.Hello(
+                        version = MonitorRelayWire.VERSION,
+                        hostName = "Host",
+                        cameraName = null,
+                    )
+                    .toJson()
+                    .toString()
+                    .toByteArray(Charsets.UTF_8),
+            )
+            host.send(
+                socket,
+                MonitorRelayWire.Kind.FRAME,
+                MonitorRelayWire.encodeFramePayload(
+                    MonitorRelayWire.FrameMetadata(
+                        timecode = null,
+                        isRecording = false,
+                        focus = null,
+                        levelRoll = null,
+                        levelPitch = null,
+                        sound = null,
+                        codec = MonitorRelayWire.FrameCodec.HEVC,
+                        isKeyframe = true,
+                        parameterSets = listOf(byteArrayOf(0x40, 0x01)),
+                    ),
+                    ByteArray(16),
+                ),
+            )
+            assertTrue(
+                // Bounds LIVENESS, not the deadline: what is under test is the 300 ms above, and
+                // this only has to outlast it. Generous because the controller's work runs on
+                // `Dispatchers.Default`, which on a CI runner is sized to cores and shared with
+                // the other 880-odd tests and the lint pass in the same job — the old five
+                // seconds was arbitrary, and it lost that race once in two runs of one commit.
+                latched.await(30, TimeUnit.SECONDS),
+                "the decode deadline never latched jpeg-only",
+            )
+            val (_, rejoinHello) = host.acceptHello()
+            assertEquals(listOf("jpeg"), rejoinHello.codecs)
+            runBlocking { controller.stop() }
+        }
+    }
+
+    @Test
+    fun `a connected broadcast that stops sending frames fails over to the rejoin surface`() {
+        LoopbackRelayHost().use { host ->
+            // A wedged or suspended broadcaster keeps its socket open, so `Event.Closed` never
+            // fires — the watcher's own budget is the only thing that notices.
+            val controller = controller(host, stallMillis = 200L)
+            controller.start()
+            val (socket, _) = host.acceptHello()
+            host.send(
+                socket,
+                MonitorRelayWire.Kind.HELLO,
+                MonitorRelayWire.Hello(
+                        version = MonitorRelayWire.VERSION,
+                        hostName = "Host",
+                        cameraName = null,
+                    )
+                    .toJson()
+                    .toString()
+                    .toByteArray(Charsets.UTF_8),
+            )
+            // Then nothing at all. Liveness bound only — the 200 ms above is what is under test.
+            val failure = runBlocking {
+                withTimeoutOrNull(30_000) {
+                    controller.ui.first { it.phase == RelayWatchUiState.Phase.FAILED }
+                }
+            }
+            assertTrue(
+                failure?.failureReason?.contains("stalled") == true,
+                "a silent broadcast never tripped the stall watchdog (got $failure)",
+            )
+            runBlocking { controller.stop() }
+        }
+    }
+
+    /**
+     * The watcher half of "the confirmation belongs to whoever pressed the button": a
+     * control-holding watcher's record press leaves the device as a plain command. Nothing on this
+     * path may consult a camera session or the Record Confirmation preference — a watcher has no
+     * session by design, and the prompt was already answered on this screen. iOS shipped exactly
+     * that mistake (field report: granted control, live record button, nothing recorded), so this
+     * is the parity guard, not a spare test.
+     */
+    @Test
+    fun `a control-holding watcher's record press reaches the host as a command`() {
+        LoopbackRelayHost().use { host ->
+            val controller = controller(host)
+            controller.start()
+            val (socket, _) = host.acceptHello()
+            host.send(
+                socket,
+                MonitorRelayWire.Kind.HELLO,
+                MonitorRelayWire.Hello(
+                        version = MonitorRelayWire.VERSION,
+                        hostName = "Host",
+                        cameraName = null,
+                    )
+                    .toJson()
+                    .toString()
+                    .toByteArray(Charsets.UTF_8),
+            )
+            host.send(
+                socket,
+                MonitorRelayWire.Kind.CONTROL_TOKEN,
+                MonitorRelayWire.ControlToken(
+                        holderName = "Test watcher",
+                        holderIsRecipient = true,
+                    )
+                    .toJson()
+                    .toString()
+                    .toByteArray(Charsets.UTF_8),
+            )
+            // Liveness bound only — the grant arrives over a loopback socket, and the controller's
+            // collector runs on a dispatcher shared with the rest of the suite.
+            val holding = runBlocking {
+                withTimeoutOrNull(30_000) { controller.ui.first { it.holdsControl } }
+            }
+            assertTrue(holding != null, "the control token never reached the watcher")
+
+            val common = NikonOpenCineSession(controller.session, scope)
+            assertNull(controller.session.reportedRecording.value)
+            val unknown = runBlocking { common.request(CameraCommandIntent.StartRecording) }
+            assertEquals(CommandStage.Failed(CommandFailure.NOT_SENT), unknown.stage)
+            host.assertNoCommand(socket)
+
+            fun sendRecordState(recording: Boolean) {
+                host.send(socket, MonitorRelayWire.Kind.STATE, MonitorRelayWire.State(
+                    recordState = if (recording) "REC" else "STBY", resolutionFrameRate = "",
+                    codec = "", media = "", liveFPS = "", cameraBatteryPercent = -1,
+                    cameraName = "SIMULATED", lens = "", temperature = "", values = emptyList(),
+                    mediaStatus = null, isRecording = recording,
+                ).toJson().toString().toByteArray(Charsets.UTF_8))
+                val reported = runBlocking {
+                    withTimeoutOrNull(30_000) {
+                        controller.session.reportedRecording.first { it == recording }
+                    }
+                }
+                assertEquals(recording, reported)
+                common.refresh()
+            }
+            sendRecordState(false)
+            assertEquals(CommandStage.Confirmed, runBlocking { common.request(CameraCommandIntent.StopRecording) }.stage)
+            runBlocking { controller.session.setRecording(false) }
+            host.assertNoCommand(socket)
+
+            val receipt = runBlocking { common.request(CameraCommandIntent.StartRecording) }
+            assertEquals(CommandStage.AwaitingObservation, receipt.stage)
+            assertEquals(MonitorRelayWire.Command.ToggleRecording, host.readCommand(socket))
+            sendRecordState(true)
+            val confirmed = runBlocking { withTimeoutOrNull(30_000) { common.outcome(receipt.operation) } }
+            assertEquals(CommandStage.Confirmed, confirmed?.stage)
+            assertEquals(CommandStage.Confirmed, runBlocking { common.request(CameraCommandIntent.StartRecording) }.stage)
+            runBlocking { controller.session.setRecording(true) }
+            host.assertNoCommand(socket)
+
+            host.send(socket, MonitorRelayWire.Kind.CONTROL_TOKEN, MonitorRelayWire.ControlToken(
+                holderName = "Host", holderIsRecipient = false,
+            ).toJson().toString().toByteArray(Charsets.UTF_8))
+            assertTrue(runBlocking { withTimeoutOrNull(30_000) { controller.ui.first { !it.holdsControl } } } != null)
+            common.updateMonitorAuthority(MonitorDataAvailability.watcher(false), false)
+            assertEquals(CommandStage.Rejected(CommandRejection.NoAuthority), runBlocking { common.request(CameraCommandIntent.StopRecording) }.stage)
+            runBlocking { assertFailsWith<CameraRecordingException> { controller.session.setRecording(false) } }
+            host.assertNoCommand(socket)
+            runBlocking { controller.stop() }
+            assertNull(controller.session.reportedRecording.value)
+            common.closeNow(SessionCloseReason.REQUESTED)
+        }
+    }
+
+    private fun controller(
+        host: LoopbackRelayHost,
+        deadlineMillis: Long = 6_000L,
+        stallMillis: Long = 8_000L,
+        onLatched: (() -> Unit)? = null,
+        passcodes: RelayPasscodes? = null,
+    ): RelayWatchController =
+        RelayWatchController(
+            scope = scope,
+            deviceName = "Test watcher",
+            broadcast =
+                RelayBroadcast(
+                    name = "Loopback host",
+                    host = "127.0.0.1",
+                    port = host.port,
+                    servedCameraHost = null,
+                ),
+            onJpegOnlyLatched = onLatched,
+            passcodes = passcodes,
+            hevcDecodeDeadlineMillis = deadlineMillis,
+            stallDeadlineMillis = stallMillis,
+            log = {},
+        )
+}
+
+/** One-connection-at-a-time relay host stub speaking the real framing on a loopback socket. */
+private class LoopbackRelayHost : AutoCloseable {
+    private val server = ServerSocket(0).apply { soTimeout = 5_000 }
+    private val sockets = mutableListOf<Socket>()
+
+    val port: Int
+        get() = server.localPort
+
+    /** Accepts the next watcher connection and returns it with its decoded HELLO. */
+    fun acceptHello(): Pair<Socket, MonitorRelayWire.Hello> {
+        val socket =
+            server.accept().also {
+                it.soTimeout = 5_000
+                sockets += it
+            }
+        val payload = readMessage(socket, MonitorRelayWire.Kind.HELLO)
+        return socket to
+            MonitorRelayWire.Hello.fromJson(JSONObject(String(payload, Charsets.UTF_8)))
+    }
+
+    /** Reads the next message the watcher sends, which must be a command. */
+    fun readCommand(socket: Socket): MonitorRelayWire.Command? =
+        MonitorRelayWire.Command.fromJson(
+            JSONObject(
+                String(readMessage(socket, MonitorRelayWire.Kind.COMMAND), Charsets.UTF_8)
+            )
+        )
+
+    /** A bounded socket observation proves refusal/idempotency emitted no wire command. */
+    fun assertNoCommand(socket: Socket) {
+        val previous = socket.soTimeout
+        try {
+            socket.soTimeout = 100
+            assertFailsWith<SocketTimeoutException> { readCommand(socket) }
+        } finally {
+            socket.soTimeout = previous
+        }
+    }
+
+    fun send(socket: Socket, kind: Int, payload: ByteArray) {
+        socket.getOutputStream().apply {
+            write(MonitorRelayWire.encodeFrame(kind, payload))
+            flush()
+        }
+    }
+
+    private fun readMessage(socket: Socket, expectedKind: Int): ByteArray {
+        val input = socket.getInputStream()
+        val buffer = ByteArray(64 * 1024)
+        var available = 0
+        while (true) {
+            MonitorRelayWire.decodeFrame(buffer, available)?.let { decoded ->
+                check(decoded.kind == expectedKind) { "unexpected kind ${decoded.kind}" }
+                return decoded.payload
+            }
+            val read = input.read(buffer, available, buffer.size - available)
+            check(read >= 0) { "socket closed before a full message" }
+            available += read
+        }
+    }
+
+    override fun close() {
+        sockets.forEach { runCatching { it.close() } }
+        runCatching { server.close() }
+    }
+}

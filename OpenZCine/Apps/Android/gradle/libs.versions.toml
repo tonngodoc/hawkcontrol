@@ -1,0 +1,75 @@
+[versions]
+# AGP, Kotlin, Compose BOM and compile SDK match OpenCine's Android/gradle/libs.versions.toml: the
+# included OpenCine build (monitor-ui, multicam) must load the same Android Gradle plugin.
+androidCompileSdk = "37"
+agp = "9.4.1"
+kotlin = "2.4.21"
+coroutines = "1.11.0"
+composeBom = "2026.09.00"
+activityCompose = "1.13.0"
+media3 = "1.11.1"
+androidxTest = "1.7.0"
+androidxTestExtJunit = "1.3.0"
+androidxCore = "1.18.0"
+coreSplashscreen = "1.2.0"
+cameraX = "1.5.3"
+mlKitTextRecognition = "16.0.1"
+playServicesWearable = "20.0.1"
+wearCompose = "1.6.2"
+json = "20231013"
+# Kyant0 AndroidLiquidGlass (Compose liquid glass / backdrop).
+# Companion shapes module (Capsule) used by Kyant catalog liquid glass components.
+# OpenCine common camera contracts. Candidate: resolved from the sibling OpenCine checkout
+# through the composite build in settings.gradle.kts until the coordinate is published.
+openCineCore = "0.1.0-SNAPSHOT"
+
+[libraries]
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
+opencine-core = { module = "com.opencapture.opencine:core", version.ref = "openCineCore" }
+opencine-monitor-ui = { module = "com.opencapture.opencine:monitor-ui", version.ref = "openCineCore" }
+opencine-multicam = { module = "com.opencapture.opencine:multicam", version.ref = "openCineCore" }
+opencine-nikon = { module = "com.opencapture.opencine:nikon", version.ref = "openCineCore" }
+opencine-appkit = { module = "com.opencapture.opencine:appkit", version.ref = "openCineCore" }
+opencine-camera-controls = { module = "com.opencapture.opencine:camera-controls", version.ref = "openCineCore" }
+opencine-native-runtime = { module = "com.opencapture.opencine:native-runtime", version.ref = "openCineCore" }
+opencine-media3 = { module = "com.opencapture.opencine:media3", version.ref = "openCineCore" }
+opencine-vulkan = { module = "com.opencapture.opencine:vulkan", version.ref = "openCineCore" }
+opencine-platform = { module = "com.opencapture.opencine:platform", version.ref = "openCineCore" }
+# The android-application module needs the explicit JUnit variant: AGP's built-in
+# Kotlin support does not apply the framework inference the kotlin-jvm plugin does.
+kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
+androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "coreSplashscreen" }
+androidx-camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "cameraX" }
+androidx-camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "cameraX" }
+androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "cameraX" }
+mlkit-text-recognition = { module = "com.google.mlkit:text-recognition", version.ref = "mlKitTextRecognition" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-foundation = { module = "androidx.compose.foundation:foundation" }
+compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
+compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
+play-services-wearable = { module = "com.google.android.gms:play-services-wearable", version.ref = "playServicesWearable" }
+wear-compose-foundation = { module = "androidx.wear.compose:compose-foundation", version.ref = "wearCompose" }
+wear-compose-material3 = { module = "androidx.wear.compose:compose-material3", version.ref = "wearCompose" }
+json = { module = "org.json:json", version.ref = "json" }
+media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
+media3-effect = { module = "androidx.media3:media3-effect", version.ref = "media3" }
+media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
+media3-transformer = { module = "androidx.media3:media3-transformer", version.ref = "media3" }
+androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTest" }
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTest" }
+androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxTestExtJunit" }
+androidx-test-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version = "2.3.0" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

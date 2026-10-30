@@ -1,0 +1,90 @@
+package com.opencapture.openzcine
+
+import android.content.Context
+import android.content.Intent
+import com.opencapture.monitorui.settings.MonitorSettingsTab
+import com.opencapture.opencine.nikon.CameraSession
+import com.opencapture.opencine.nikon.LiveFrameSource
+import com.opencapture.openzcine.media.MediaGalleryFailureInjection
+import com.opencapture.openzcine.pairing.PairingScript
+import com.opencapture.opencine.cameracontrols.PortraitFeedAspect
+import com.opencapture.opencine.appkit.MonitorDisplayMode
+import com.opencapture.opencine.vocabulary.SessionRecoveryUi
+
+/**
+ * Release stub — the demo harness does not exist outside debug builds. The
+ * real implementation is in `src/debug` (see its doc for the philosophy,
+ * mirrored from `ios/Runner/DemoHarness.swift`).
+ */
+object DemoHarness {
+    fun relayWatchEndpoint(intent: android.content.Intent): Pair<String, Int>? = null
+
+    /** Never matched in release: the extra is read only by the debug harness. */
+    const val EXTRA_DEMO_FEED = "zc.demo.feed"
+
+    /** Never matched in release: the extra is read only by the debug harness. */
+    const val EXTRA_SCOPES = "zc.scopes"
+
+    /** Never matched in release: the extra is read only by the debug harness. */
+    const val EXTRA_PORTRAIT_ASPECT = "zc.portraitAspect"
+
+    /** Never matched in release: the extra is read only by the debug harness. */
+    const val EXTRA_SESSION_HOST = "zc.session.host"
+
+    /** Never matched in release: the extra is read only by the debug harness. */
+    const val EXTRA_MEDIA = "zc.media"
+
+    /** Release builds cannot force a standalone settings surface. */
+    @Suppress("UNUSED_PARAMETER")
+    internal fun chromeEditMode(intent: Intent): MonitorDisplayMode? = null
+
+    internal fun settingsTab(intent: Intent): MonitorSettingsTab? = null
+
+    /** Release builds cannot auto-open debug surfaces. */
+    @Suppress("UNUSED_PARAMETER")
+    fun opensMedia(intent: Intent): Boolean = false
+
+    /** Release builds cannot auto-open debug surfaces. */
+    @Suppress("UNUSED_PARAMETER")
+    fun autoPlaysMedia(intent: Intent): Boolean = false
+
+    /** Release builds cannot inject Gallery failures. */
+    @Suppress("UNUSED_PARAMETER")
+    internal fun galleryFailureInjection(intent: Intent): MediaGalleryFailureInjection =
+        MediaGalleryFailureInjection.NONE
+
+    /** Always null: release builds carry no demo frame source. */
+    @Suppress("UNUSED_PARAMETER")
+    fun demoLiveFeed(
+        intent: Intent,
+        context: Context? = null,
+    ): Pair<CameraSession, LiveFrameSource?>? = null
+
+    /** Always null: release builds carry no scripted pairing wizard. */
+    @Suppress("UNUSED_PARAMETER")
+    fun pairingScript(intent: Intent): PairingScript? = null
+
+    /** Always null: release builds cannot stage a dropped-session affordance. */
+    @Suppress("UNUSED_PARAMETER")
+    internal fun sessionRecoveryOverride(intent: Intent): SessionRecoveryUi? = null
+
+    /** Release builds never provide a debug image-assist override. */
+    @Suppress("UNUSED_PARAMETER")
+    fun assistEffects(intent: Intent): FeedEffects? = null
+
+    /** Always null: release builds cannot arm the 50/50 comparison from an intent. */
+    @Suppress("UNUSED_PARAMETER")
+    fun splitComparison(intent: Intent): FeedSplitOrientation? = null
+
+    /** Always null: the debug scope toggle does not exist in release builds. */
+    @Suppress("UNUSED_PARAMETER")
+    fun scopeKind(intent: Intent): ScopeKind? = null
+
+    /** Always null: release builds cannot activate debug scope selections. */
+    @Suppress("UNUSED_PARAMETER")
+    fun scopeKinds(intent: Intent): List<ScopeKind>? = null
+
+    /** Always null: release builds cannot override the persisted portrait aspect. */
+    @Suppress("UNUSED_PARAMETER")
+    fun portraitFeedAspect(intent: Intent): PortraitFeedAspect? = null
+}

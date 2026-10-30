@@ -1,0 +1,173 @@
+import Testing
+
+@testable import OpenZCineCore
+
+/// The relay serves every viewer from one encode, so bitrate follows the slowest link that is
+/// supposed to keep up: sustained saturation steps down promptly, recovery is deliberately slow.
+@Test func bitrateStepsDownOnSustainedSaturation() {
+    var adaptation = RelayBitrateAdaptation(now: 0)
+    #expect(adaptation.bitsPerSecond == 10_000_000)
+    var changed: Int?
+    // A 6-second window at 10 ticks/s: runs of three consecutive saturated ticks — the stream
+    // genuinely outrunning the drain, not per-frame pacing blips.
+    for tick in 0..<60 {
+        let now = Double(tick) / 10
+        let result = adaptation.recordTick(saturated: tick % 5 < 3, now: now)
+        if result != nil { changed = result }
+    }
+    #expect(changed == 7_000_000)
+}
+
+@Test func bitrateHoldsThroughBriefBlips() {
+    var adaptation = RelayBitrateAdaptation(now: 0)
+    // 6 seconds with a single saturated tick — far under the step-down threshold.
+    for tick in 0..<60 {
+        let now = Double(tick) / 10
+        #expect(adaptation.recordTick(saturated: tick == 3, now: now) == nil)
+    }
+    #expect(adaptation.bitsPerSecond == 10_000_000)
+}
+
+/// The field regression: a two-frame in-flight cap at stream rate makes every viewer momentarily
+/// "full" on isolated ticks all the time. Counting those as congestion walked multi-watcher
+/// sessions down the ladder and the slow-recovery rule kept them there. Alternating
+/// saturated/clean ticks — 50% raw saturation, zero consecutive — must not move the rate.
+@Test func bitrateIgnoresAlternatingPacingBackpressure() {
+    var adaptation = RelayBitrateAdaptation(now: 0)
+    for tick in 0..<120 {
+        let now = Double(tick) / 10
+        #expect(adaptation.recordTick(saturated: tick % 2 == 0, now: now) == nil)
+    }
+    #expect(adaptation.bitsPerSecond == 10_000_000)
+}
+
+@Test func bitrateRecoversOneRungAfterSustainedCleanRunning() {
+    var adaptation = RelayBitrateAdaptation(now: 0)
+    // Force one step down.
+    var now = 0.0
+    for tick in 0..<60 {
+        now = Double(tick) / 10
+        _ = adaptation.recordTick(saturated: true, now: now)
+    }
+    #expect(adaptation.bitsPerSecond == 7_000_000)
+    // Clean for the required recovery period — one rung back, not a jump to the top.
+    var recovered: Int?
+    for tick in 0..<400 {
+        now += Double(tick) / 400 + 0.1
+        if let change = adaptation.recordTick(saturated: false, now: now) {
+            recovered = change
+            break
+        }
+    }
+    #expect(recovered == 10_000_000)
+}
+
+/// The QP cap steps WITH the rate: strict at full budget, relaxed on the low rungs — a cap the
+/// rate controller cannot honor on grainy log content would turn a step-down into a no-op right
+/// when shrinking the stream is the whole point.
+@Test func frameQPCapRelaxesAsTheRateStepsDown() {
+    var adaptation = RelayBitrateAdaptation(now: 0)
+    #expect(adaptation.maxFrameQP == 36)
+    var now = 0.0
+    for tick in 0..<60 {
+        now = Double(tick) / 10
+        _ = adaptation.recordTick(saturated: true, now: now)
+    }
+    #expect(adaptation.bitsPerSecond == 7_000_000)
+    #expect(adaptation.maxFrameQP == 39)
+    for tick in 0..<600 {
+        now += Double(tick) / 10
+        _ = adaptation.recordTick(saturated: true, now: now)
+    }
+    #expect(adaptation.bitsPerSecond == 3_000_000)
+    #expect(adaptation.maxFrameQP == 45)
+}
+
+@Test func bitrateNeverLeavesTheLadder() {
+    var adaptation = RelayBitrateAdaptation(now: 0)
+    var now = 0.0
+    // Hammer saturation far past the floor.
+    for tick in 0..<600 {
+        now = Double(tick) / 10
+        _ = adaptation.recordTick(saturated: true, now: now)
+    }
+    #expect(adaptation.bitsPerSecond == 3_000_000)
+}
+
+/// A fixed floor alone sets the equilibrium in the wrong place — a 35 fps session pins at 20
+/// while the relay keeps the channel. The threshold anchors to the session's own unloaded
+/// baseline, with the absolute floor covering sessions that have not measured one yet.
+@Test func starveThresholdAnchorsToTheSoloBaseline() {
+    #expect(RelayCameraStarvePolicy.starveThresholdFPS(soloBaselineFPS: 0) == 15)
+    #expect(RelayCameraStarvePolicy.starveThresholdFPS(soloBaselineFPS: 10) == 15)
+    let anchored = RelayCameraStarvePolicy.starveThresholdFPS(soloBaselineFPS: 35)
+    #expect(abs(anchored - 25.2) < 0.001)
+}
+
+@Test func encoderProfilesTradeLatencyForQualityKnobs() {
+    #expect(RelayEncoderProfile.lowLatency.maxKeyframeInterval == 50)
+    #expect(RelayEncoderProfile.quality.maxKeyframeInterval == 120)
+    #expect(RelayEncoderProfile.lowLatency.maxInFlightFramesPerPeer == 2)
+    #expect(RelayEncoderProfile.quality.maxInFlightFramesPerPeer == 4)
+}
+
+// MARK: The encode lane
+
+/// The field report: an operator starts a screen recording on the broadcasting phone (ReplayKit
+/// takes its share of the same hardware encoder), the watcher's picture falls seconds behind, and
+/// it snaps back to live the instant the recording stops. That snap-back is a queue draining —
+/// frames were being handed to a stage that had not finished the previous one, and every one of
+/// them was kept. The lane is the rule that drops them instead.
+@Test func encodeLanePassesTheNewestFrameNotTheOldest() {
+    var lane = RelayEncodeLane(depth: 1)
+    var encoded: [Int] = []
+    // Frames 1–5 arrive while frame 1 is still inside the encoder.
+    for frame in 1...5 where lane.admit() { encoded.append(frame) }
+    #expect(encoded == [1])
+    lane.release()
+    // The stage drained. The next frame encoded must be the one arriving NOW — not frame 2,
+    // which is what a queue would have kept and what made the watcher run late.
+    for frame in 6...8 where lane.admit() { encoded.append(frame) }
+    #expect(encoded == [1, 6])
+}
+
+/// A source that permanently outruns the drain must not accumulate: the work admitted stays
+/// pinned to the drain's own rate, however long the run is.
+@Test func encodeLaneStaysBoundedWhenTheSourceOutrunsTheDrain() {
+    var lane = RelayEncodeLane(depth: 2)
+    var admitted = 0
+    var peakInFlight = 0
+    for frame in 0..<1_000 {
+        if lane.admit() { admitted += 1 }
+        peakInFlight = max(peakInFlight, lane.framesInFlight)
+        // The drain finishes one frame for every four the source offers.
+        if frame % 4 == 3 { lane.release() }
+    }
+    #expect(peakInFlight == 2)
+    // One admission per completion of the drain (250 of them) plus the depth the lane opened
+    // with, less the final release no frame follows — bounded by the drain, never by the 1000
+    // frames the source offered.
+    #expect(admitted == 251)
+}
+
+@Test func encodeLaneDepthIsTheOnlyThingBetweenFullAndReady() {
+    var lane = RelayEncodeLane(depth: 2)
+    // `#expect` cannot hold a mutating call, so each admission is bound first.
+    let first = lane.admit()
+    let second = lane.admit()
+    let third = lane.admit()
+    #expect(first)
+    #expect(second)
+    #expect(!third)
+    lane.release()
+    let afterDrain = lane.admit()
+    #expect(afterDrain)
+    // Releases with nothing in flight cannot lend the lane extra depth — a stray completion
+    // (a stopped broadcast, a swapped encoder) must not reopen the unbounded door.
+    lane.release()
+    lane.release()
+    lane.release()
+    #expect(lane.framesInFlight == 0)
+    let refilled = (lane.admit(), lane.admit(), lane.admit())
+    #expect(refilled == (true, true, false))
+}

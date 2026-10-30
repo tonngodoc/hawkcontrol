@@ -1,0 +1,426 @@
+# OpenZCine
+
+Open-source iOS + Android app to connect to, control, and monitor (live image) Nikon Z
+cinema-line cameras — primarily the **Nikon ZR**. Built openly with agentic coding tools, held to
+clean, exemplary engineering standards.
+
+> **Status:** Native iOS and Android implementation milestone. Production work targets the portable
+> Swift business/protocol core, a SwiftUI iOS shell, and a Jetpack Compose Android shell. Both
+> shells ship in public beta — iOS on TestFlight, Android on Google Play. The older Flutter
+> prototype remains only as a protocol/live-view reference while useful.
+
+## Stack & tooling
+
+- **Swift Package Manager / Swift** — production shared business and camera-protocol core.
+- **SwiftUI** — production iOS app shell.
+- **Jetpack Compose / Kotlin** — production Android app shell and Android platform adapters.
+- **Swift SDK for Android** — production bridge path for the shared Swift core. Keep the facade/JNI
+  boundary small and verify build, packaging, and runtime behavior through the Android gates.
+  Camera-control writes: core/facade encode and confirm; Kotlin maps failures only — see
+  `docs/android-control-writes.md`.
+- **Flutter / Dart** — archived prototype reference only; not part of production tooling.
+- **just** — the single entry point for all repository tasks. Run `just` to list recipes.
+- **swift-format / swift test / xcodebuild** — production formatting, tests, and iOS build checks.
+- **typos, editorconfig-checker, markdownlint-cli2, lychee, actionlint** — repository meta-checks.
+
+Install local tooling with `just setup` (macOS / Homebrew).
+
+## Where things live
+
+- `Sources/OpenZCineCore/` — production Swift shared core.
+  The iOS Runner and Watch targets link it as the `OpenZCineCore` product of the local package
+  at the repository root (`ios/Runner.xcodeproj` references `..`), so a new core file needs no
+  Xcode registration; app files that use core types `import OpenZCineCore`.
+- `OpenCineNikon` (product of the sibling `../OpenCine`, pinned in `opencine-pins.txt`): the Nikon PTP/IP and USB wire,
+  property codes and decoders, profiles, media naming, discovery/connect/session policy and
+  `NikonCameraSession`. `OpenZCineCore` re-exports it (`Sources/OpenZCineCore/OpenCineNikon.swift`),
+  so app, Watch and JNI facade code keeps importing `OpenZCineCore`. Edit Nikon protocol code and
+  its tests there (`Sources/OpenCineNikon`, `Tests/OpenCineNikonTests`), then bump the pin.
+- `../OpenCine` (sibling platform repo, pinned in `opencine-pins.txt`, `scripts/checkout-opencine.sh`):
+  `OpenCineMedia` supplies `CubeLUT` and `FrameRateSampler` (scoped re-exports in
+  `Sources/OpenZCineCore/CubeLUT.swift`; the Runner project links the product). `OpenCineApple`
+  supplies the iPad HDMI/UVC capture source (`UVCVideoSource`, leases); the Runner links it and keeps
+  the state copy and the `UIImage` render in `ios/Runner/UVCVideoSource.swift`.
+- Shared monitor UI and multicam (NIKON-01), also from `../OpenCine`: the Runner links `MonitorUI`,
+  `MonitorPresentation` and `OpenCineMulticam`; Android depends on `monitor-ui` and `multicam` from
+  the included OpenCine build. Never copy these into the app: change them in OpenCine (keep the
+  SwiftUI and Compose sides in step) and bump the pin. Multicam app code: `ios/Runner/Multicam*.swift`
+  and `Apps/Android/app/.../multicam/`; Nikon member policy lives in OpenCineNikon
+  (`NikonMulticam.swift`).
+- `Tests/OpenZCineCoreTests/` — Swift shared-core tests.
+- `ios/Runner/` — production SwiftUI iOS app shell.
+- `Apps/Android/` — production Jetpack Compose app, platform adapters, and Wear OS companion.
+- `reference/flutter-prototype/` — archived Flutter prototype/reference source.
+- `vendor/` — **gitignored.** Local-only material; nothing here is committed or required to build.
+- `ref/` — **gitignored** local reference material.
+- `docs/` — engineering references: `commit-hygiene.md` (what must never be committed),
+  `nikon-mtp.md` (protocol sourcing and maintenance policy), `nikon-sdk.md` (no-vendor-SDK policy),
+  `android-control-writes.md` (Android control write authority — no soft second-guess after
+  native accept), `PROJECT-MANAGEMENT.md` (Kaneo board conventions + agent sync contract).
+- `docs/design/` — design specs, implementation plans, and archived browser prototypes.
+- `docs/investigations/` — resolved or pending engineering investigations and debugging records.
+- The website (opencapture.org/openzcine) lives in the private repo `erik-sutton95/opencapture-site`
+  and deploys to Vercel. README images live in `docs/assets/readme/`.
+- `.local/` — **gitignored** demo feeds, raw marketing sources, and local tooling migrations.
+- `.github/` — CI workflows, issue/PR templates.
+
+## Supported agent tools
+
+OpenZCine supports **Claude Code** and **Codex** only:
+
+- Shared instructions live in `AGENTS.md`; both clients follow them.
+- Claude Code configuration lives under tracked `.claude/`, with personal settings ignored.
+- Codex uses `AGENTS.md`; personal `.codex/` state is ignored.
+
+Do not add Cursor, Copilot, Gemini, Windsurf, Aider, Cline, Roo, Kilo, Continue, or OpenCode-specific
+instructions. Put guidance needed by both supported clients here or in the relevant project docs.
+
+For `docs/flows/` work, read its `README.md` first, pull the live ExcaliDash scene before editing,
+use `pushMerged` for incremental changes, and verify afterward. `just flows-push` is reserved for an
+intentional whole-scene replacement because it resets the live layout.
+
+## Hard rules
+
+- **Never commit `vendor/`, `ref/`, `captures/`, or `.local/`.** They contain proprietary,
+  private, or raw working material. They are gitignored; if a `git add` ever tries to include them,
+  fix `.gitignore` — do not force-add.
+- **Mind commit hygiene.** This is a public repo; never commit secrets, credentials, PII, or
+  non-redistributable assets. Follow `docs/commit-hygiene.md` before every commit.
+- **Work on a branch and open a PR.** Do not commit directly to `main`.
+- **Conventional Commits** for every commit (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `build:`, `test:`).
+- **Ship both shells.** Product-facing features, behaviour fixes, and operator-visible policy
+  changes must land for **iOS and Android together** (see [Dual-platform parity](#dual-platform-parity-ios--android)).
+  Do not leave one app desynced unless the change is explicitly single-platform infrastructure.
+
+## Dual-platform parity (iOS + Android)
+
+OpenZCine is one product with two native shells over one portable Swift core. Treat every
+feature, fix, and policy change as **cross-platform by default** so the apps do not drift.
+
+### Default expectation
+
+- **One behaviour, both shells.** If the operator can hit the flow on either phone, implement and
+  verify it on **both** iOS (`ios/Runner`) and Android (`Apps/Android`) in the same deliverable /
+  PR unless the brief explicitly scopes a single platform (and then note the follow-up).
+- **Core first.** Put protocol, validation, poll order, load policy, selection math, and
+  operator-facing *rules* in `Sources/OpenZCineCore` (or a tiny shared wire in
+  `Sources/OpenZCineAndroidFacade` only when the rule is already Swift-owned for Android). Shells
+  render, adapt OS APIs, and call in — they do not reimplement camera or colour logic in Kotlin
+  or duplicate it only in SwiftUI.
+- **Same acceptance criteria.** Write UAT that does not say “Android only” or “iOS only” unless
+  the capability is truly OS-unique (e.g. a single-platform packaging/CI fix).
+
+### Workflow for features and fixes
+
+1. **Spec** the operator-visible behaviour once (shared acceptance list).
+2. **Implement + unit-test** portable logic in the core (or shared Swift wire).
+3. **Wire the iOS shell** (`ios/Runner` / watch as needed).
+4. **Wire the Android shell** (thin facade/JNI if needed, then Compose). Prefer extending an
+   existing core/facade API over a Kotlin-only algorithm.
+5. **Verify both** with the matching gates and, for UI, the screenshot deploy rule on each
+   platform you touched.
+6. **PR / Kaneo:** name both platforms in the test plan; do not mark the task done with only one
+   shell updated when the product surface exists on both.
+
+### Verification gates (both sides of a dual change)
+
+| Surface | Gate |
+| ------- | ---- |
+| Shared Swift / iOS shell / facade | `just native-check` |
+| Android app / adapters | `just android-check` |
+| Repo-wide / docs / CI meta | `just check` |
+
+For a dual-platform feature or behaviour fix, expect **`just native-check` and
+`just android-check`** (and `just check` when repo meta applies) before claiming complete. CI’s
+Native Swift/iOS and Android jobs both need to stay green.
+
+### Allowed single-platform exceptions
+
+Do **not** force a second-shell change when the work is truly isolated, for example:
+
+- Pure packaging, signing, store listing, or CI for one platform
+- OS-only APIs with no product twin (e.g. a one-off platform permission string)
+- Bugfixes that cannot reproduce on the other shell after checking shared code paths
+
+When you take an exception: **state it in the PR**, and if product parity is still owed, create or
+link a Kaneo follow-up rather than silently shipping a permanent desync.
+
+### Anti-patterns (avoid desync)
+
+- Fixing a behaviour only in Compose or only in SwiftUI while the same flow exists on the other
+  shell
+- Inventing protocol, LUT, recording, or network policy in Kotlin
+- “Android-only” product features without an iOS path (or the reverse) when both apps expose the
+  surface
+- Claiming done after verifying a single platform when acceptance applies to both
+
+## Verification
+
+Before claiming any change is complete, run:
+
+```sh
+just check
+```
+
+For production Swift/iOS or Swift Android-facade changes, also run:
+
+```sh
+just native-check
+```
+
+For Android app/adapter changes, also run:
+
+```sh
+just android-check
+```
+
+For dual-platform product work, run **both** `just native-check` and `just android-check`.
+
+Run the gates you need in **one** `just` invocation, for example `just check native-check` or
+`just check native-check android-check`. Just runs a recipe that several gates share
+(`swift-lint`, `swift-test`, `check-demo-isolation`, `check-gles-shaders`) once per invocation;
+separate invocations repeat it, and `just check` followed by `just native-check` runs the Swift
+package tests twice.
+
+Hosted CI has two tiers ([`docs/ci.md`](docs/ci.md)): the PR tier feeds the one required check,
+**CI gate**; the nightly tier runs the full suite on `main` and keeps one "Nightly CI failing on
+main" issue. A PR-tier failure is fixed, or the test is quarantined with an issue; there are no
+accepted reds. CodeRabbit is advisory: read, verify and fix or answer its findings, but it does not
+block merges.
+
+## Project management (Kaneo)
+
+Work is tracked on the OpenZCine Kaneo board (project `OPE`). Keep it in sync as part of normal
+work — this is a standing contract, not a request-driven step:
+
+- **Start** a deliverable → set its task to **in-progress**.
+- **Open/update its PR** → move it to **in-review** through review, even after local Verification.
+- **Finish** it → set it to **done** only after merge and successful default-branch CI.
+- **Abandon** it → move it to **archived** explicitly; never infer cancellation from a closed PR.
+- **New scope** → create a task (backlog ideas go to **planned** with the `investigation` label);
+  add real deliverables to `docs/ROADMAP.md`.
+- Roadmap = scope source of truth; Kaneo = live status mirror. Move them together.
+
+Board identity, statuses, the GitHub issue sync behavior, and which MCP tools work on this
+self-hosted instance are in `docs/PROJECT-MANAGEMENT.md`. Read it before touching the board.
+
+## Coding principles
+
+- **Composition over inheritance.** Prefer small, pure functions and immutable data over stateful
+  classes. Use records / small classes for structured data.
+- **Short, single-purpose functions.** If a function grows past ~20 statements or 3 levels of nesting,
+  extract helpers and use early returns.
+- **Throw, don't return null, for errors.** Raise descriptive exceptions rather than signalling failure
+  with `null`.
+- **Type everything public.** All public Swift/Kotlin function signatures carry explicit types. Avoid
+  dynamic or loosely typed boundaries.
+- **Doc comments on the public API.** Use platform-native doc comments on exported members.
+- **Keep shared Swift portable.** The shared core must not depend on SwiftUI, UIKit, Android APIs, or
+  Compose. Platform adapters own sockets, permissions, lifecycle, rendering, storage, and UI.
+
+## Build and test commands
+
+`just` is the single entry point for all repository tasks. Run `just` with no arguments to list
+every recipe. Common commands:
+
+```sh
+just setup          # Install local tooling (macOS / Homebrew)
+just check          # Run all repo-level checks (lint, format, CI meta)
+just native-check   # Swift checks, then one iOS build-for-testing, its unit tests and the Watch build
+just check native-check # Both gates in one invocation; shared recipes run once
+just ios-test       # Build the iOS app and tests once, then test without rebuilding
+just ios-build      # Build the iOS app shell only (no tests)
+just watch-build    # Build the watchOS companion app
+just test           # Run Swift package tests
+just android-build  # Build the Android phone app and staged Swift runtime
+just android-check  # Build, test, compile instrumentation tests, and lint Android
+just android-release-check # Verify the signed phone/Wear release pair and runtime closure
+```
+
+**Before claiming any change is complete**, run `just native-check` for Swift/iOS or facade work,
+`just android-check` for Android work, and `just check` for repo-wide changes. Product features and
+behaviour fixes that span both apps need **both** platform gates (see
+[Dual-platform parity](#dual-platform-parity-ios--android)).
+
+Interactive Xcode/simulator helpers (builds, launching the simulator, screenshots, device logs)
+are fine for iteration on the `ios/Runner` shell, but they never replace `just` — CI and official
+verification always go through `just`.
+
+## Project structure
+
+The canonical layer names map to this repository as follows:
+
+| Layer | This repo | Purpose |
+| ----- | --------- | ------- |
+| App | `ios/Runner` | SwiftUI app entry point, scene/lifecycle |
+| Features | `ios/Runner` | Feature views, view models, coordinators |
+| Resources | `ios/Runner` | Assets, localisation strings, Info.plist |
+| Watch | `ios/OpenZCineWatch` | watchOS companion app (embedded in Runner) |
+| Core | `Sources/OpenZCineCore` | Portable camera protocol and business logic |
+| Android facade | `Sources/OpenZCineAndroidFacade` | The app's own Swift JNI exports (scopes, feed effects, LUTs, Frame.io); the Nikon session layer is OpenCine `OpenCineNikonAndroid` |
+| Android app | `Apps/Android/app` | Compose phone shell and Android adapters |
+| Android session | OpenCine `Android/nikon` (`com.opencapture.opencine:nikon`) | Nikon session contract, Kotlin session over the Swift layer, JNI facade `NikonNative` |
+| Android API | `Apps/Android/core-api` | Monitor availability and relay lease/encoder types |
+| Wear | `Apps/Android/wear`, `Apps/Android/wear-relay` | Wear OS UI and phone relay contract |
+| Android tests | `Apps/Android/*/src/test`, `Apps/Android/*/src/androidTest` | JVM and device UI tests |
+
+Tests for the shared core live in `Tests/OpenZCineCoreTests/`.
+
+## Coding standards
+
+### Shared core (`Sources/OpenZCineCore`)
+
+The core must stay **UI-free and portable** — it must not import SwiftUI, UIKit, AppKit, or any
+Android/Compose framework. Platform adapters own sockets, permissions, lifecycle, rendering,
+storage, and all UI. Keep the interop boundary small.
+
+- Swift 6.0 strict concurrency applies to all new core code.
+- Prefer value types (structs, enums) over classes.
+- Errors must use typed `LocalizedError` conformances — never raw strings.
+- No force-unwrapping without a documented `// SAFETY:` justification comment.
+
+### iOS shell (`ios/Runner`, `ios/OpenZCineWatch`)
+
+The shells follow modern SwiftUI idioms exclusively:
+
+- **`@Observable`** and **`@Bindable`** for state — `ObservableObject` / `@Published` are
+  deprecated for new code.
+- **`NavigationStack`** for navigation — `NavigationView` is deprecated for new code.
+- **`async/await`** for all asynchronous work; no Combine for new code.
+- **Typed `LocalizedError`** for user-facing error presentation.
+- **Swift Testing** (`import Testing`) for all new unit tests.
+- Swift 6.0 strict concurrency: annotate actors, isolate state correctly, no data races.
+
+### Deploy + screenshot-verify every UI change (MANDATORY — no exceptions)
+
+Any SwiftUI or Compose **visual** change (layout, chrome, glass, colors, typography, spacing) is
+**not done** until it has been **installed and launched** on a connected target — not merely
+compiled. A successful `assembleDebug` / `xcodebuild` without install is insufficient.
+
+**Deploy targets (use what is plugged/booted):**
+
+| Platform | Install / launch |
+| -------- | ---------------- |
+| Android phone | `just android-install <serial>` then start the activity (demo extras if useful) |
+| iOS simulator | Build+run on the booted sim (XcodeBuildMCP `build_run_sim` or project `just`/`xcodebuild` flow) |
+| iOS device | Build+run on the connected device when that is the review target |
+
+**Orientation (critical):** OpenZCine is a **landscape-first camera monitor**. Always verify
+visual and interaction work in **landscape** first (and as the default for Android device
+screenshots). Portrait is secondary. Never sign off a UI change from portrait-only testing.
+
+After install: capture a screenshot → inspect **all four edges** and confirm every interface
+element is fully visible. The iOS app is **landscape-locked and only ~400pt tall**, so rotate its
+raw simulator shot to read it.
+
+- **Bottom:** nothing flush against or past the bottom edge. Leave clearance for the iOS home
+  indicator and Android gesture/navigation insets.
+- **Right/left:** content fills the intended width; no unintended empty band at an edge, and no
+  element pushed off the side.
+- **Truncation/overflow:** no `…` truncation, no text wrapping mid-word into a vertical sliver, no
+  card taller than its container.
+
+If ANY element clips, overflows, or truncates: fix it, **redeploy**, and re-screenshot until the
+frame is clean. **Never report a UI change as complete or "matches the mockup" without this
+pass.** Prefer the real device size and, when a screen has multiple states, screenshot the
+tightest one. Glass / material / edge-highlight tuning counts as a UI change — always redeploy.
+
+## Writing tests
+
+Test behavior at contract boundaries, not implementation. A test earns its place when a real
+regression fails it and a correct refactor does not. Tests that pin implementation lock in
+whatever code exists today and cost every later change (and every agent) time and tokens.
+
+- One test per behavior that the operator, a camera or another app depends on: camera commands
+  and the bytes they put on the wire, recording start and stop, preservation of footage and user
+  data, session recovery, migrations, and shared UI contracts (what is shown, announced and
+  tappable). Not one test per function or type.
+- Do not test private helpers, call order, file or type names, source text or exact internal
+  counts, and do not reach into private state through reflection. Do not copy an old
+  implementation into a test as its oracle; use golden data or recorded camera output.
+- Before adding a test, check whether an existing test already fails for the same bug. Extend it
+  instead of adding a near-duplicate.
+- Deterministic only: manual clocks and event signals, no sleeps, wall-clock budgets or fixed
+  yield loops. A performance requirement is an operation count in normal tests; real timing
+  budgets belong in a performance tier.
+- A test that flakes twice, locally or in CI, is quarantined that day: it moves to the nightly
+  tier with a `ci-quarantine` issue in the same change (see the CI quarantine rule), instead of
+  being diagnosed again run after run.
+- A test that fails a correct refactor is pinning implementation. Replace it with a behavior test
+  that catches the same bug, then delete it in the same change. That deletion is not lost
+  coverage.
+- Keep: wire and migration goldens, recovery and decoder ownership tests, real-camera corpora,
+  Swift and Kotlin twins (they test two shipping implementations), and architecture rules on
+  imports, dependency edges and brand-free shared code (they guard a boundary, not an
+  implementation detail).
+- Critical user flows (camera connection, record start and stop, live-view activation) have
+  UI-level integration tests.
+- There is no line-coverage target. Coverage counts lines executed, not behavior protected, and
+  chasing it produces the implementation tests this section rules out.
+- Use **Swift Testing** (`#expect`, `#require`) for new Swift tests and the existing Kotlin/JUnit
+  conventions for Android tests. XCTest is acceptable only in existing targets not yet migrated.
+
+## Parallelize independent work
+
+Favor speed: when a task splits into **independent** units, dispatch subagents **in
+a single message** so they run concurrently — a serial pass over N independent items is needlessly
+N× slower. Before any multi-step task, ask *"which parts are independent?"* and fan those out.
+
+- **Fan out** for: codebase exploration/search across many files; independent edits (a batch of
+  review findings, the same change across many call sites, separate features — one agent each);
+  multi-angle review (correctness / security / tests at once); independent research questions.
+  Use the active client's subagent support when parallel work materially helps.
+- **Stay in the main thread** for: tight `edit → build → verify → adjust` loops (e.g. simulator
+  screenshot tuning); work with shared state or sequential dependencies; trivial tasks where
+  dispatch overhead exceeds the work.
+
+Give each subagent a **self-contained prompt** — it can't see the conversation, so include the file
+paths, the exact change, and how to verify — and have it return the conclusion, not a file dump.
+
+Use the active client's built-in subagents only. Do not shell out to external model CLIs. Keep model
+or effort selection inside Claude Code or Codex, and verify delegated work with the same repository
+gates as local work.
+
+## Feature-branch worktrees
+
+When dispatching agent work that makes code changes while on a feature branch, give it an isolated
+git worktree — don't let it edit the shared checkout directly.
+
+- **Verify in the worktree** with `just native-check` (or the project's known-good fallback if a
+  phase is environmentally broken) before merging anything back — never merge unverified work.
+- **Merge back** with a local `git merge` into the current feature branch once verified. A GitHub PR
+  is reserved for feature-branch → `main` only.
+- **Clean up** the worktree and delete its branch after a successful merge.
+
+This keeps the main feature-branch checkout free for parallel work, folded in once ready.
+
+## General preferences
+
+- If asked to do too much work at once, stop and state that clearly.
+- A UI scaffold without wired backend behavior is not "done" — see completion metrics.
+
+## DO NOT
+
+Repo-hygiene rules (never touch `vendor/`/`ref/`, never commit secrets/PII, never commit to `main`,
+Conventional Commits, dual-platform shipping) are in [Hard rules](#hard-rules). In addition:
+
+- **No force-unwrapping** without a `// SAFETY:` comment explaining why the unwrap is guaranteed.
+- **Do not use deprecated APIs** in new code: `NavigationView`, `ObservableObject`, `@Published`,
+  and Combine-based data flow are off-limits for new SwiftUI code.
+- **Do not bypass `just`** for official verification — never invoke `xcodebuild` or `swift test`
+  directly in place of the canonical `just native-check` / `just check`.
+- **Do not ship one shell’s product behaviour without the other** when both apps expose the same
+  surface — see [Dual-platform parity](#dual-platform-parity-ios--android).
+
+## Completion metrics
+
+A task is complete when all of the following are true:
+
+- Acceptance criteria from the task brief are checked off.
+- **Both shells** implement the product behaviour when the surface exists on iOS and Android
+  (or an explicit single-platform exception is documented in the PR / Kaneo task).
+- `just native-check` and/or `just android-check` pass for the platforms touched; dual-platform
+  product work runs **both**. Use `just check` for repo-wide / non-app changes.
+- New or modified behaviour is covered by passing tests.
+- Public APIs carry doc comments.
+- Relevant docs under `docs/` are updated if behaviour changed.

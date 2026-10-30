@@ -1,0 +1,15 @@
+{
+  "Exclude": [
+    "LICENSE",
+    ".local/",
+    ".claude/skills/",
+    ".claude/worktrees/",
+    ".worktrees/",
+    "docs/flows/",
+    "docs/design/",
+    "ios/",
+    "android/",
+    "build/",
+    "Apps/Android/frozen-vulkan-donor/src/main/assets/shaders/vulkan/"
+  ]
+}

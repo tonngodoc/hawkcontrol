@@ -1,0 +1,591 @@
+package com.opencapture.openzcine
+
+import android.content.Context
+import android.content.Intent
+import android.util.Log
+import com.opencapture.monitorui.settings.MonitorSettingsTab
+import com.opencapture.openzcine.bridge.SwiftCore
+import com.opencapture.opencine.nikon.SwiftCoreCameraSession
+import com.opencapture.opencine.nikon.CameraConnectionPhase
+import com.opencapture.opencine.nikon.CameraConnectionProgress
+import com.opencapture.opencine.nikon.CameraIdentity
+import com.opencapture.opencine.nikon.CameraRecordingException
+import com.opencapture.opencine.nikon.CameraRecordingState
+import com.opencapture.opencine.nikon.CameraSession
+import com.opencapture.opencine.nikon.CameraSessionState
+import com.opencapture.opencine.nikon.FakeCameraSession
+import com.opencapture.opencine.nikon.LiveFrameSource
+import com.opencapture.openzcine.media.MediaGalleryFailureInjection
+import com.opencapture.openzcine.pairing.PairingCredentials
+import com.opencapture.openzcine.pairing.PairingEnvironment
+import com.opencapture.openzcine.pairing.PairingFlowState
+import com.opencapture.openzcine.pairing.PairingPath
+import com.opencapture.openzcine.pairing.PairingScript
+import com.opencapture.openzcine.pairing.PairingStep
+import com.opencapture.opencine.cameracontrols.PortraitFeedAspect
+import com.opencapture.opencine.appkit.MonitorDisplayMode
+import com.opencapture.openzcine.transport.CameraDiscovery
+import com.opencapture.openzcine.transport.DiscoveredCamera
+import com.opencapture.openzcine.transport.UsbPtpCamera
+import com.opencapture.openzcine.transport.UsbPtpCameraAccess
+import com.opencapture.openzcine.transport.UsbPtpCameraSource
+import com.opencapture.opencine.nikon.UsbPtpOpenResult
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
+import com.opencapture.opencine.vocabulary.SessionRecoveryUi
+
+/**
+ * Debug-only demo hooks, mirroring `ios/Runner/DemoHarness.swift`: this real
+ * implementation lives in `src/debug` only, `src/release` carries an inert
+ * stub, so release builds physically cannot activate demo behaviour — the
+ * Android equivalent of the iOS `#if DEBUG` isolation.
+ *
+ * Activate the demo feed:
+ * ```
+ * adb shell am start -n com.opencapture.openzcine/.MainActivity --ez zc.demo.feed true
+ * ```
+ * Prefers a local sample video when available (gitignored `samples/` clips
+ * staged into debug assets; prefers `A002_C057_0704BT.MP4`). Override with
+ * `--es zc.demo.video /path/on/device.mp4`. Falls back to the synthetic
+ * colour-bar generator when no sample is present.
+ *
+ * Add `--es zc.demo.levelSource none` to omit the fixture horizon and exercise
+ * the visibly labelled device-tilt fallback instead.
+ *
+ * Drive the pairing wizard to any state (screenshot verification):
+ * ```
+ * adb shell am start -n com.opencapture.openzcine/.MainActivity \
+ *   --es zc.demo.pairing permissions|choose|prepare|network|discover|connecting|pairing|confirm|reconnecting \
+ *   --es zc.demo.pairingPath ap|hotspot|usb
+ *   --es zc.demo.usbState empty|needs-permission|denied|ready
+ * ```
+ *
+ * Open standalone System settings for a short, deterministic route into the
+ * anonymous bug-report form:
+ * ```
+ * adb shell am start -n com.opencapture.openzcine/.MainActivity \
+ *   --es zc.demo.settings system
+ * ```
+ *
+ * Feed effects (needs API 33 + the staged Swift core; combine freely):
+ * ```
+ * --es zc.assist lut,falsecolor,peaking,zebra   which effects are on
+ * --es zc.lut log3g10|nlog|mono|r3d_ne          built-in look (default log3g10)
+ * --es zc.fc.scale stops|ire                    false-colour scale (default stops)
+ * --es zc.portraitAspect fit|fill               persisted portrait feed presentation
+ * ```
+ *
+ * Or drive the real shell session (Swift-core PTP-IP connect + live view)
+ * against a camera or fake-ZR server:
+ * ```
+ * adb shell am start -n com.opencapture.openzcine/.MainActivity --es zc.session.host <ipv4>
+ * ```
+ * (fake ZR on the development Mac: `adb reverse tcp:15740 tcp:15740`, host
+ * `127.0.0.1`; connect phases log under the `SwiftCoreCameraSession` tag).
+ */
+object DemoHarness {
+    private const val TAG = "SwiftCoreCameraSession"
+
+    /** Boolean intent extra that switches the synthetic demo feed on. */
+    const val EXTRA_DEMO_FEED = "zc.demo.feed"
+
+    /**
+     * Optional on-device path to a sample video used as the demo live feed
+     * (`--es zc.demo.video /sdcard/Download/clip.mp4`). When unset, debug
+     * assets under `demo/` (staged from repo `samples/`) are preferred.
+     */
+    const val EXTRA_DEMO_VIDEO = "zc.demo.video"
+
+    /**
+     * Debug-only direct relay watch (`--es zc.demo.relayWatch host:port`): joins a broadcast at
+     * a literal endpoint, bypassing NSD — for cross-platform wire verification through
+     * `adb reverse` where mDNS cannot cross network segments.
+     */
+    const val EXTRA_RELAY_WATCH = "zc.demo.relayWatch"
+
+    fun relayWatchEndpoint(intent: android.content.Intent): Pair<String, Int>? {
+        val raw = intent.getStringExtra(EXTRA_RELAY_WATCH) ?: return null
+        val host = raw.substringBeforeLast(':')
+        val port = raw.substringAfterLast(':').toIntOrNull() ?: return null
+        return host to port
+    }
+
+    /**
+     * Debug-only virtual-horizon source selector. `none` omits synthetic
+     * camera-level metadata so the monitor exercises its device-gravity
+     * fallback; every other value keeps the explicitly labelled fixture.
+     */
+    private const val EXTRA_DEMO_LEVEL_SOURCE = "zc.demo.levelSource"
+
+    /** String intent extra selecting the pairing wizard state to script. */
+    const val EXTRA_PAIRING_STEP = "zc.demo.pairing"
+
+    /**
+     * Stages the connect pane over the network step (`ready`/`joining`/`failed`),
+     * mirroring iOS `ZC_DEMO_JOIN_POPUP`: `--es zc.demo.joinPopup ready`.
+     */
+    const val EXTRA_JOIN_POPUP = "zc.demo.joinPopup"
+
+    /** String intent extra selecting a standalone settings tab for visual verification. */
+    private const val EXTRA_SETTINGS_TAB = "zc.demo.settings"
+
+    /** String intent extra selecting the scripted pairing path (`ap`, `hotspot`, or `usb`). */
+    const val EXTRA_PAIRING_PATH = "zc.demo.pairingPath"
+
+    /**
+     * Debug-only USB discovery state for pairing screenshots. The fixture
+     * never asks Android for USB permission or opens a physical device.
+     */
+    const val EXTRA_USB_STATE = "zc.demo.usbState"
+
+    /**
+     * Stages the dropped-session recovery affordance over the held frame
+     * (`--es zc.demo.sessionLost retrying|lost`), mirroring iOS
+     * `ZC_DEMO_SESSION_LOST`. Paints the state only; no retry loop runs.
+     */
+    const val EXTRA_SESSION_LOST = "zc.demo.sessionLost"
+
+    /** Debug-only recovery state for screenshot verification, or null. */
+    internal fun sessionRecoveryOverride(intent: Intent): SessionRecoveryUi? =
+        when (intent.getStringExtra(EXTRA_SESSION_LOST)) {
+            null -> null
+            "retrying" -> SessionRecoveryUi.Retrying(attempt = 2, maxAttempts = 8)
+            else -> SessionRecoveryUi.WaitingForOperator(attemptsMade = 8)
+        }
+
+    /** String intent extra selecting scopes: `wave,parade,histo,vector,lights`. */
+    const val EXTRA_SCOPES = "zc.scopes"
+
+    /** String intent extra selecting the persisted portrait monitor aspect. */
+    const val EXTRA_PORTRAIT_ASPECT = "zc.portraitAspect"
+
+    /** Debug-only fit/fill override used for deterministic portrait screenshots. */
+    fun portraitFeedAspect(intent: Intent): PortraitFeedAspect? =
+        when (intent.getStringExtra(EXTRA_PORTRAIT_ASPECT)) {
+            "fit" -> PortraitFeedAspect.FIT_16X9
+            "fill" -> PortraitFeedAspect.FILL
+            else -> null
+        }
+
+    /** String intent extra arming the 50/50 Log-vs-LUT comparison: `vertical` or `horizontal`. */
+    const val EXTRA_SPLIT = "zc.split"
+
+    /** Debug-only comparison override, for deterministic split screenshots. */
+    fun splitComparison(intent: Intent): FeedSplitOrientation? =
+        when (intent.getStringExtra(EXTRA_SPLIT)) {
+            "vertical" -> FeedSplitOrientation.VERTICAL
+            "horizontal" -> FeedSplitOrientation.HORIZONTAL
+            else -> null
+        }
+
+    /**
+     * Explicit debug image-assist override, distinct from mutable runtime
+     * toolbar state. `null` means a normal launch must restore preferences;
+     * an explicitly empty `zc.assist` value intentionally means all effects
+     * off for the scripted session.
+     */
+    fun assistEffects(intent: Intent): FeedEffects? =
+        if (intent.hasExtra("zc.assist")) {
+            FeedEffects.parse(
+                intent.getStringExtra("zc.assist"),
+                intent.getStringExtra("zc.lut"),
+                intent.getStringExtra("zc.fc.scale"),
+            )
+        } else {
+            null
+        }
+
+    /**
+     * The first scope selected by the debug intent, or null. Kept for callers
+     * that still use the pre-multi-scope seam; new monitor wiring uses
+     * [scopeKinds]. Activate with e.g.
+     * ```
+     * adb shell am start -n com.opencapture.openzcine/.MainActivity \
+     *   --ez zc.demo.feed true --es zc.scopes wave
+     * ```
+     */
+    fun scopeKind(intent: Intent): ScopeKind? =
+        scopeKinds(intent)?.firstOrNull()
+
+    /**
+     * Ordered, deduplicated debug scope selection. Comma-separated values keep
+     * screenshots deterministic while exercising concurrent panels:
+     * `--es zc.scopes wave,parade,lights`.
+     */
+    fun scopeKinds(intent: Intent): List<ScopeKind>? =
+        ScopeKind.parseTokens(intent.getStringExtra(EXTRA_SCOPES))
+
+    /** String intent extra carrying the camera host for a real Swift-core session. */
+    const val EXTRA_SESSION_HOST = "zc.session.host"
+
+    /** `browse` opens Media; `play` also opens its first playable proxy. */
+    const val EXTRA_MEDIA = "zc.media"
+
+    /**
+     * Opens the Edit view on one DISP mode (`live` / `clean` / `command`) so the eye badges can be
+     * captured headlessly — the editor is only reachable by tapping through Operator Setup.
+     */
+    const val EXTRA_CHROME_EDIT = "zc.demo.chromeEdit"
+
+    internal fun chromeEditMode(intent: Intent): MonitorDisplayMode? =
+        intent.getStringExtra(EXTRA_CHROME_EDIT)?.trim()?.let { raw ->
+            MonitorDisplayMode.entries.firstOrNull { it.name.equals(raw, true) || it.title.equals(raw, true) }
+        }
+
+    /** Debug-only standalone settings selector; release builds always return null. */
+    internal fun settingsTab(intent: Intent): MonitorSettingsTab? =
+        when (intent.getStringExtra(EXTRA_SETTINGS_TAB)) {
+            "link" -> MonitorSettingsTab.LINK
+            "assist" -> MonitorSettingsTab.ASSIST
+            "controls" -> MonitorSettingsTab.CONTROLS
+            "display" -> MonitorSettingsTab.DISPLAY
+            "storage" -> MonitorSettingsTab.STORAGE
+            "system" -> MonitorSettingsTab.SYSTEM
+            else -> null
+        }
+
+    /**
+     * Fails the first Gallery write after MediaStore insertion, then permits a
+     * retry. This exercises pending-row cleanup on hardware without touching
+     * unrelated device media: `--es zc.gallery.failOnce write`.
+     */
+    const val EXTRA_GALLERY_FAILURE = "zc.gallery.failOnce"
+
+    fun opensMedia(intent: Intent): Boolean =
+        intent.getStringExtra(EXTRA_MEDIA) in setOf("browse", "play")
+
+    fun autoPlaysMedia(intent: Intent): Boolean = intent.getStringExtra(EXTRA_MEDIA) == "play"
+
+    /** Debug-only one-shot Gallery failure requested by [intent]. */
+    internal fun galleryFailureInjection(intent: Intent): MediaGalleryFailureInjection =
+        MediaGalleryFailureInjection.parse(intent.getStringExtra(EXTRA_GALLERY_FAILURE))
+
+    /**
+     * The debug session/feed override for [intent], or null in a normal
+     * launch: `zc.session.host` makes the shell session a real
+     * [SwiftCoreCameraSession] (null frame source — the shell streams the
+     * session's own live view once connected); `zc.demo.feed` pairs a fake
+     * session with a sample-video or synthetic 25 fps frame source.
+     */
+    fun demoLiveFeed(
+        intent: Intent,
+        context: Context? = null,
+    ): Pair<CameraSession, LiveFrameSource?>? {
+        intent.getStringExtra(EXTRA_SESSION_HOST)?.let { host ->
+            if (!SwiftCore.isAvailable) {
+                Log.w(TAG, "libOpenZCineAndroid.so not bundled — run `just android-core` first")
+            }
+            Log.i(TAG, "shell session → Swift core at $host")
+            return SwiftCoreCameraSession(host) { phase, detail ->
+                Log.i(TAG, "phase: $phase${if (detail.isEmpty()) "" else " — $detail"}")
+            } to null
+        }
+        if (!intent.getBooleanExtra(EXTRA_DEMO_FEED, false)) return null
+        val session =
+            FakeCameraSession(
+                discoverable =
+                    CameraIdentity(
+                        name = "Demo Feed",
+                        model = "OpenZCine Demo",
+                        serialNumber = "DEMO",
+                    ),
+                startConnected = true,
+            )
+        val includeDebugCameraLevel = intent.getStringExtra(EXTRA_DEMO_LEVEL_SOURCE) != "none"
+        val videoPath = intent.getStringExtra(EXTRA_DEMO_VIDEO)
+        val videoSource =
+            context?.let {
+                DemoVideoFrameSource.resolve(
+                    context = it,
+                    explicitPath = videoPath,
+                    includeDebugCameraLevel = includeDebugCameraLevel,
+                )
+            }
+        val frameSource =
+            videoSource
+                ?: DemoFrameSource(includeDebugCameraLevel = includeDebugCameraLevel).also {
+                    if (context != null) {
+                        Log.i(TAG, "demo feed ← synthetic colour bars (no sample video)")
+                    }
+                }
+        return session to frameSource
+    }
+
+    /**
+     * A scripted pairing-wizard state + fake backend when [intent] carries
+     * [EXTRA_PAIRING_STEP]; null in a normal launch. Joins always succeed
+     * after a beat, discovery finds a fake ZR after a few seconds, and the
+     * session connects slowly enough to screenshot the connecting state.
+     */
+    fun pairingScript(intent: Intent): PairingScript? {
+        intent.getStringExtra(EXTRA_JOIN_POPUP)?.let { popup ->
+            return PairingScript(
+                start =
+                    PairingFlowState(
+                        step = PairingStep.NETWORK,
+                        path = PairingPath.CAMERA_ACCESS_POINT,
+                    ),
+                environment = scriptedEnvironment(null, ScriptedPairingMode.STABLE),
+                joinPopup = popup,
+            )
+        }
+        val raw = intent.getStringExtra(EXTRA_PAIRING_STEP) ?: return null
+        val requestedHotspot = intent.getStringExtra(EXTRA_PAIRING_PATH) == "hotspot"
+        val requestedUsb = intent.getStringExtra(EXTRA_PAIRING_PATH) == "usb"
+        val usbState =
+            if (requestedUsb) {
+                ScriptedUsbState.parse(intent.getStringExtra(EXTRA_USB_STATE))
+            } else {
+                null
+            }
+        val step =
+            when (raw) {
+                "permissions" -> PairingStep.PERMISSIONS
+                "choose" -> PairingStep.CHOOSE_PATH
+                "prepare" -> PairingStep.PREPARE
+                "network", "connecting", "pairing", "confirm", "reconnecting" ->
+                    PairingStep.NETWORK
+                "discover" -> PairingStep.DISCOVER
+                else -> PairingStep.CHOOSE_PATH
+            }
+        val path =
+            if (requestedUsb) {
+                PairingPath.USB_C
+            } else if (requestedHotspot || step == PairingStep.DISCOVER) {
+                PairingPath.PHONE_HOTSPOT
+            } else {
+                PairingPath.CAMERA_ACCESS_POINT
+            }
+        return PairingScript(
+            start = PairingFlowState(step = step, path = path),
+            environment = scriptedEnvironment(usbState, ScriptedPairingMode.parse(raw)),
+            autoConnect = raw in setOf("connecting", "pairing", "confirm", "reconnecting"),
+        )
+    }
+
+    private fun scriptedEnvironment(
+        usbState: ScriptedUsbState?,
+        firstPairMode: ScriptedPairingMode,
+    ): PairingEnvironment {
+        val credentials =
+            object : PairingCredentials {
+                override var lastSsid: String? = null
+                private val saved = mutableMapOf<String, String>()
+
+                override fun passphrase(ssid: String): String? = saved[ssid]
+
+                override fun save(ssid: String, passphrase: String) {
+                    saved[ssid] = passphrase
+                }
+            }
+        return PairingEnvironment(
+            joinCameraAp = { _, _ ->
+                delay(1_500)
+                true
+            },
+            releaseCameraAp = {},
+            hotspotCameras =
+                flow {
+                    emit(emptyList())
+                    delay(4_000)
+                    emit(
+                        listOf(
+                            DiscoveredCamera(
+                                name = "ZR_6001234",
+                                host = "172.20.10.9",
+                                port = CameraDiscovery.PTP_IP_PORT,
+                            )
+                        )
+                    )
+            },
+            createSession = { ScriptedPairingSession(ScriptedPairingMode.STABLE) },
+            createFirstTimePairingSession = { ScriptedPairingSession(firstPairMode) },
+            usbCameraSource = usbState?.let(::ScriptedUsbCameraSource),
+            createUsbSession = { ScriptedPairingSession(ScriptedPairingMode.STABLE) },
+            createFirstTimePairingUsbSession = { ScriptedPairingSession(firstPairMode) },
+            credentials = credentials,
+            awaitCameraApRestart = { true },
+        )
+    }
+
+    /** Deterministic first-pair lifecycle stage for debug screenshot verification. */
+    private enum class ScriptedPairingMode {
+        STABLE,
+        HANDSHAKING,
+        PAIRING,
+        CONFIRM,
+        RECONNECTING,
+        ;
+
+        companion object {
+            fun parse(raw: String): ScriptedPairingMode =
+                when (raw) {
+                    "connecting" -> HANDSHAKING
+                    "pairing" -> PAIRING
+                    "confirm" -> CONFIRM
+                    "reconnecting" -> RECONNECTING
+                    else -> STABLE
+                }
+        }
+    }
+
+    /** Debug-only USB discovery variants for screenshot verification. */
+    private enum class ScriptedUsbState {
+        EMPTY,
+        NEEDS_PERMISSION,
+        DENIED,
+        READY,
+        ;
+
+        companion object {
+            fun parse(raw: String?): ScriptedUsbState =
+                when (raw) {
+                    "empty" -> EMPTY
+                    "needs-permission" -> NEEDS_PERMISSION
+                    "denied" -> DENIED
+                    else -> READY
+                }
+        }
+    }
+
+    /**
+     * Debug-only USB discovery source for UI screenshots. It never reads a
+     * real device serial or opens a physical transport. Tapping Allow changes
+     * the synthetic card to Ready so the permission-recovery copy can be
+     * screenshot without invoking Android's actual USB permission dialog.
+     */
+    private class ScriptedUsbCameraSource(initialState: ScriptedUsbState) : UsbPtpCameraSource {
+        private val mutableCameras = MutableStateFlow(camerasFor(initialState))
+        override val cameras: StateFlow<List<UsbPtpCamera>> =
+            mutableCameras.asStateFlow()
+
+        override fun refresh() = Unit
+
+        override fun requestPermission(camera: UsbPtpCamera) {
+            if (camera.token == DEBUG_USB_TOKEN) {
+                mutableCameras.value = camerasFor(ScriptedUsbState.READY)
+            }
+        }
+
+        override fun open(camera: UsbPtpCamera): UsbPtpOpenResult =
+            UsbPtpOpenResult.Rejected("Debug USB camera cannot open a physical transport.")
+
+        override fun close() = Unit
+
+        private companion object {
+            const val DEBUG_USB_TOKEN = "debug-usb-zr"
+            const val DEBUG_USB_HOST_KEY = "usb:00000000000000000000000000000000"
+
+            fun camerasFor(state: ScriptedUsbState): List<UsbPtpCamera> =
+                if (state == ScriptedUsbState.EMPTY) {
+                    emptyList()
+                } else {
+                    listOf(
+                        UsbPtpCamera(
+                            token = DEBUG_USB_TOKEN,
+                            displayName = "Synthetic USB-C camera",
+                            access =
+                                when (state) {
+                                    ScriptedUsbState.NEEDS_PERMISSION ->
+                                        UsbPtpCameraAccess.NEEDS_PERMISSION
+                                    ScriptedUsbState.DENIED -> UsbPtpCameraAccess.DENIED
+                                    ScriptedUsbState.READY -> UsbPtpCameraAccess.READY
+                                    ScriptedUsbState.EMPTY -> error("Empty USB state has no camera")
+                                },
+                            // This never renders; it keeps the source-set
+                            // fixture structurally equivalent to a ready
+                            // production camera record without resembling a
+                            // real body identity.
+                            hostKey =
+                                if (state == ScriptedUsbState.READY) {
+                                    DEBUG_USB_HOST_KEY
+                                } else {
+                                    null
+                                },
+                            isDebugFixture = true,
+                        ),
+                    )
+                }
+        }
+    }
+
+    /** Connects slowly enough for every first-pair phase to be screenshotted. */
+    private class ScriptedPairingSession(private val mode: ScriptedPairingMode) : CameraSession {
+        private val mutableState =
+            MutableStateFlow<CameraSessionState>(CameraSessionState.Disconnected)
+        private val mutableConnectionProgress = MutableStateFlow(CameraConnectionProgress())
+        private val mutableRecordingState = MutableStateFlow(CameraRecordingState.STANDBY)
+
+        override val state: StateFlow<CameraSessionState> = mutableState.asStateFlow()
+        override val connectionProgress: StateFlow<CameraConnectionProgress> =
+            mutableConnectionProgress.asStateFlow()
+        override val recordingState: StateFlow<CameraRecordingState> =
+            mutableRecordingState.asStateFlow()
+
+        override suspend fun connect() {
+            // Idempotent: the monitor shell re-connects the handed-off session.
+            if (mutableState.value is CameraSessionState.Connected) return
+            mutableState.value = CameraSessionState.Connecting
+            mutableConnectionProgress.value =
+                CameraConnectionProgress(CameraConnectionPhase.HANDSHAKING)
+            when (mode) {
+                ScriptedPairingMode.STABLE,
+                ScriptedPairingMode.HANDSHAKING,
+                -> delay(PHASE_HOLD_MILLIS)
+                ScriptedPairingMode.PAIRING -> {
+                    delay(250)
+                    mutableConnectionProgress.value =
+                        CameraConnectionProgress(CameraConnectionPhase.PAIRING)
+                    delay(PHASE_HOLD_MILLIS)
+                }
+                ScriptedPairingMode.CONFIRM -> {
+                    delay(250)
+                    mutableConnectionProgress.value =
+                        CameraConnectionProgress(CameraConnectionPhase.PAIRING)
+                    delay(250)
+                    mutableConnectionProgress.value =
+                        CameraConnectionProgress(CameraConnectionPhase.CONFIRM_ON_CAMERA, "123456")
+                    delay(PHASE_HOLD_MILLIS)
+                }
+                ScriptedPairingMode.RECONNECTING -> {
+                    delay(250)
+                    mutableConnectionProgress.value =
+                        CameraConnectionProgress(CameraConnectionPhase.PAIRING)
+                    delay(250)
+                    mutableConnectionProgress.value =
+                        CameraConnectionProgress(CameraConnectionPhase.CONFIRM_ON_CAMERA, "123456")
+                    delay(250)
+                }
+            }
+            mutableState.value =
+                CameraSessionState.Connected(
+                    CameraIdentity(name = "Nikon ZR", model = "NIKON ZR", serialNumber = "6001234")
+                )
+            mutableConnectionProgress.value =
+                CameraConnectionProgress(CameraConnectionPhase.CONNECTED, "Nikon ZR")
+        }
+
+        override suspend fun setRecording(recording: Boolean) {
+            if (mutableState.value !is CameraSessionState.Connected) {
+                throw CameraRecordingException.NotConnected
+            }
+            mutableRecordingState.value =
+                if (recording) CameraRecordingState.STARTING else CameraRecordingState.STOPPING
+            mutableRecordingState.value =
+                if (recording) CameraRecordingState.RECORDING else CameraRecordingState.STANDBY
+        }
+
+        override suspend fun disconnect() {
+            mutableState.value = CameraSessionState.Disconnected
+            mutableConnectionProgress.value = CameraConnectionProgress()
+            mutableRecordingState.value = CameraRecordingState.STANDBY
+        }
+
+        private companion object {
+            const val PHASE_HOLD_MILLIS: Long = 30_000L
+        }
+    }
+}

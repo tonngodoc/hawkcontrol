@@ -1,0 +1,90 @@
+# Automatic area labels for pull requests.
+# actions/labeler v5 requires each label to contain match configuration objects.
+
+"area:core":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Sources/OpenZCineCore/**/*"
+
+"area:protocol":
+  - changed-files:
+      - any-glob-to-any-file:
+          # The Nikon PTP wire, properties and session policy live in the OpenCineNikon product
+          # of the OpenCine package (pinned in opencine-pins.txt); these are the app-side transports and facades.
+          - "opencine-pins.txt"
+          - "Sources/OpenZCineCore/OpenCineNikon.swift"
+          - "Sources/OpenZCineAndroidFacade/*PTP*.swift"
+          - "ios/Runner/*PTP*.swift"
+          - "ios/Runner/*CameraTransport.swift"
+          - "ios/Runner/NativeCamera*.swift"
+
+"area:ios":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "ios/Runner/**/*"
+
+"area:watch":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "ios/OpenZCineWatch/**/*"
+
+"area:live-view":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Sources/OpenZCineAndroidFacade/*LiveView*.swift"
+          - "ios/Runner/*Live*.swift"
+          - "ios/Runner/Metal*.swift"
+          - "ios/Runner/Frame*.swift"
+
+"area:monitoring":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Sources/OpenZCineCore/*Assist*.swift"
+          - "Sources/OpenZCineCore/*Scope*.swift"
+          - "Sources/OpenZCineCore/FalseColor.swift"
+          - "Sources/OpenZCineCore/TrafficLightsMeter.swift"
+          - "ios/Runner/*Scope*.swift"
+          - "ios/Runner/*Assist*.swift"
+          - "ios/Runner/Monitor*.swift"
+
+"area:control":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Sources/OpenZCineAndroidFacade/*Control*.swift"
+          - "Sources/OpenZCineCore/Record*.swift"
+          - "ios/Runner/*Control*.swift"
+
+"area:media":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Sources/OpenZCineCore/Media*.swift"
+          - "Sources/OpenZCineCore/*LUT*.swift"
+          - "ios/Runner/Media*.swift"
+          - "ios/Runner/*LUT*.swift"
+          # Frame.io delivery; the portable workflow is OpenCine's OpenCineFrameIO product and the
+          # Android owner is OpenCine's :frameio module.
+          - "ios/Runner/Frameio/**/*"
+          - "Apps/Android/app/src/main/kotlin/com/opencapture/openzcine/frameio/**/*"
+
+"area:ui":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "ios/Runner/*View.swift"
+          - "ios/Runner/*View*.swift"
+          - "ios/Runner/Design*.swift"
+          - "ios/Runner/Branding.swift"
+
+"area:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "docs/**/*"
+          - "handbook/**/*"
+          - ".github/**/*"
+          - "README.md"
+          - "CONTRIBUTING.md"
+
+"area:android":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Apps/Android/**/*"

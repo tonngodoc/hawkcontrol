@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The post-splash theme preserves the app's existing fullscreen base.
+      MainActivity reapplies its edge-to-edge and transient-system-bar policy. -->
+    <style name="Theme.OpenZCine" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- Cold-start hold only: solid brand backdrop + fully transparent icon so
+      the platform never flashes a square logo. The single branded splash
+      (rounded AppLogo + wordmark) is drawn once in Compose LaunchSplashOverlay. -->
+    <style name="Theme.OpenZCine.Starting" parent="Theme.SplashScreen">
+        <item name="isLightTheme">false</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/openzcine_splash_empty</item>
+        <item name="windowSplashScreenBackground">@color/openzcine_splash_background</item>
+        <item name="postSplashScreenTheme">@style/Theme.OpenZCine</item>
+    </style>
+</resources>

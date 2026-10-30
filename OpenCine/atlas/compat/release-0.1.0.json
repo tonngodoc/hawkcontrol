@@ -1,0 +1,158 @@
+{
+  "version": "0.1.0",
+  "note": "Release record for tools/publish.py (RELEASE-01, ADR 0010, docs/PUBLISH.md). One platform repository, OpenCine, holds every shared product and this atlas; it gets one tag. `commit` is what the publish expects on `branch` (the platform may differ from it only under atlas/); `evidence` says where the green run at that commit is recorded. `verify` runs in a clean clone ({base} is the remote base); app `resolve` runs in the app worktree to produce `lockfiles`. Decisions stay null until the user records them with `tools/publish.py decide`.",
+  "decisions": {
+    "owner": "erik-sutton95",
+    "visibility": "public",
+    "android": "sibling-pins",
+    "author_email": "9084979+erik-sutton95@users.noreply.github.com"
+  },
+  "platform": {
+    "repo": "opencine",
+    "branch": "main",
+    "commit": "85239fd23b23d0023bc1e6eaa1570a41c2a69e67",
+    "description": "OpenCine: shared camera contracts, media runtime, UI 2.0 design system, multicam engine and the DJI, Nikon and Insta360 integrations of the OpenCapture apps (Swift and Kotlin), plus their atlas",
+    "verify": [
+      "swift build --build-tests",
+      "swift test",
+      "cd Android && ./gradlew test",
+      "python3 -m unittest discover -s atlas/tests",
+      "python3 atlas/tools/atlas.py check"
+    ],
+    "evidence": {
+      "status": "passed",
+      "commit": "85239fd23b23d0023bc1e6eaa1570a41c2a69e67",
+      "where": "2026-10-03 product852: shared2067 Testing+86 XCTest/build/strict, MonitorUI/OpenCineApple generic both arches, Android1051 unique/2 existing Core skips/test/lint/release/Vulkan and Atlas91/check passed. Reviewed usage preferences, exposure/look cards, playback/native item ownership and DJI recovery episodes locally integrated. All three functional consumer sweeps passed against exact852 sibling source; union-852-combined-evidence manifest and SHELL-03-I4 retain exact artifacts/source guards. Thin-app migration unfinished; physical cameras untested. New installed playback fixture reds remain separate."
+    }
+  },
+  "apps": [
+    {
+      "repo": "openpocketcine",
+      "branch": "opencine/integration",
+      "commit": "de40e9291fe433012f8f535cb3e91d0217822256",
+      "pr_title": "Adopt the shared OpenCine packages 0.1.0",
+      "work_packages": [
+        "UI-01",
+        "UI-02",
+        "CORE-02",
+        "STATE-01",
+        "MEDIA-01",
+        "MEDIA-02",
+        "VENDOR-01",
+        "MULTI-02",
+        "OPTIONAL-01",
+        "OPTIONAL-02"
+      ],
+      "checklist": "docs/OPENCINE-INTEGRATION.md",
+      "notes_files": [
+        "ios/TestFlight/WhatToTest.en-US.txt",
+        "Apps/Android/Play/WhatToTest.en-US.txt",
+        "Apps/Android/Play/whatsnew/whatsnew-en-US"
+      ],
+      "resolve": [
+        "just ios-resolve",
+        "swift package resolve"
+      ],
+      "lockfiles": [
+        "ios/Package.resolved",
+        "Package.resolved"
+      ],
+      "verify": [
+        "swift test",
+        "bash scripts/ios-package-resolved-check.sh",
+        "cd ios && xcodegen generate",
+        "xcodebuild -resolvePackageDependencies -disableAutomaticPackageResolution -project ios/OpenPocketCine.xcodeproj -scheme OpenPocketCine",
+        "just ios-build",
+        "sh scripts/checkout-opencine.sh {base}",
+        "just android-check"
+      ],
+      "evidence": {
+        "status": "passed",
+        "commit": "de40e9291fe433012f8f535cb3e91d0217822256",
+        "where": "2026-10-03 integrationde40e929/source901344bf differs only pin852: Swift280/justcheck/handbook99 pages, actual generic BFT both arches, Android506 unique/0fail/errors/skips/lint/debug/release/staging/JNI41 exact and legacy javap parity passed. Prior actual native672/112 on exact0f recovery owner remains separate; final852 consumer artifacts retain source attribution. Full P2/media unfinished; physical cameras untested. Immutable union-852-combined-evidence references exact logs/APKs/JUnit/native/source guards; no new integrated installed-runtime claim."
+      }
+    },
+    {
+      "repo": "openinstacine",
+      "branch": "opencine/integration",
+      "commit": "51086b73a7d88dcf506298b15c8b76edfa1d6798",
+      "pr_title": "Adopt the shared OpenCine packages 0.1.0",
+      "work_packages": [
+        "UI-03",
+        "CORE-02",
+        "STATE-01",
+        "MEDIA-01",
+        "MEDIA-02",
+        "VENDOR-03",
+        "OPTIONAL-02"
+      ],
+      "checklist": "docs/implementation/opencine-integration.md",
+      "notes_files": [
+        "ios/TestFlight/WhatToTest.en-US.txt",
+        "Apps/Android/Play/WhatToTest.en-US.txt",
+        "Apps/Android/Play/whatsnew/whatsnew-en-US"
+      ],
+      "resolve": [
+        "just ios-resolve",
+        "swift package resolve"
+      ],
+      "lockfiles": [
+        "ios/Package.resolved",
+        "Package.resolved"
+      ],
+      "verify": [
+        "swift test",
+        "bash scripts/ios-package-resolved-check.sh",
+        "cd ios && xcodegen generate",
+        "xcodebuild -resolvePackageDependencies -disableAutomaticPackageResolution -project ios/OpenInstaCine.xcodeproj -scheme OpenInstaCine",
+        "just ios-build",
+        "sh scripts/checkout-opencine.sh {base}",
+        "just android-check"
+      ],
+      "evidence": {
+        "status": "passed",
+        "commit": "51086b73a7d88dcf506298b15c8b76edfa1d6798",
+        "where": "2026-10-03 integration51086b73/source479276c0 differs only pin852: Swift591/justcheck, actual generic BFT both arches, Android684 unique/0fail/errors/skips/lint/debug/release/staging/JNI8 exact passed. Native playback40 at exact198/d4d remains separate with owner source-byte equality to852; new installed fixture is unfinished. Restored originals retained; full I4/I5/I6 and hardware unfinished. Immutable union-852-combined-evidence references exact logs/APKs/JUnit/native/source guards; no new integrated installed-runtime claim."
+      }
+    },
+    {
+      "repo": "openzcine",
+      "branch": "opencine/integration",
+      "commit": "b7a25cca0867b17bfa20330bf059f5a04165e48c",
+      "pr_title": "Adopt the shared OpenCine packages 0.1.0",
+      "work_packages": [
+        "CORE-02",
+        "STATE-01",
+        "MEDIA-01",
+        "MEDIA-02",
+        "VENDOR-02",
+        "OPTIONAL-01"
+      ],
+      "checklist": "docs/OPENCINE-INTEGRATION.md",
+      "notes_files": [
+        "ios/TestFlight/WhatToTest.en-US.txt",
+        "Apps/Android/distribution/whatsnew/whatsnew-en-US"
+      ],
+      "resolve": [
+        "xcodebuild -resolvePackageDependencies -project ios/Runner.xcodeproj -scheme Runner",
+        "swift package resolve"
+      ],
+      "lockfiles": [
+        "Package.resolved",
+        "ios/Runner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+      ],
+      "verify": [
+        "swift test",
+        "xcodebuild -resolvePackageDependencies -disableAutomaticPackageResolution -project ios/Runner.xcodeproj -scheme Runner",
+        "just ios-build",
+        "sh scripts/checkout-opencine.sh {base}",
+        "just android-check"
+      ],
+      "evidence": {
+        "status": "passed",
+        "commit": "b7a25cca0867b17bfa20330bf059f5a04165e48c",
+        "where": "2026-10-03 integrationb7a25cca/sourcebb35edb4 differs only pin852: Swift626, actual generic BFT both arches, Android949 across phone/wear/wear-relay/core-api/0fail/errors/skips/lint/debug/release/staging/JNI73 exact passed. Justcheck retains swift-lint failure in35 files byte-equal77d/cdd; original donor filter AX red remains unwaived. Finite simulated selection4 keeps actual26e/77d product artifacts and committed8584 fixture attribution. Full Z2/Z3, timed iOS input and physical cameras unfinished. Immutable union-852-combined-evidence references exact logs/APKs/JUnit/native/source guards; no new integrated installed-runtime claim."
+      }
+    }
+  ]
+}

@@ -1,0 +1,979 @@
+package com.opencapture.openzcine.media
+
+import com.opencapture.opencine.nikon.NikonAndroidGalleryProjectionPolicy
+import com.opencapture.opencine.nikon.NikonMediaClipRecord
+import com.opencapture.opencine.nikon.NikonMediaContentKind
+import com.opencapture.opencine.nikon.NikonMediaObjectIdentity
+import com.opencapture.opencine.nikon.NikonStillPhotoClassification
+import com.opencapture.opencine.nikon.NikonStillPreviewStrategy
+import com.opencapture.opencine.frameio.FrameioCameraRejoinEvidence
+import com.opencapture.opencine.frameio.FrameioInternetHopState
+import java.nio.file.Files
+import java.nio.file.Path
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import kotlin.io.path.createTempDirectory
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import com.opencapture.monitorui.MonitorThumbnailSize
+import com.opencapture.opencine.appkit.MonitorMediaCategoryFilter
+import com.opencapture.opencine.appkit.MonitorMediaSort
+import com.opencapture.opencine.appkit.MonitorMediaViewOptions
+import com.opencapture.monitorui.MonitorMediaLayout
+import com.opencapture.opencine.nikon.SavedCameraRecord
+import com.opencapture.opencine.nikon.SavedCameraRecords
+import com.opencapture.opencine.nikon.SavedCameraTransport
+
+/** JVM coverage for the persisted, core-authorized Android library state. */
+class MediaLibraryStateTest {
+    /** Fixed clock so the relative date windows are deterministic. */
+    private val TODAY: LocalDate = LocalDate.of(2026, 7, 27)
+
+    @Test
+    fun `intentional Frameio hop retains the camera library until rejoin resolves`() {
+        val retained =
+            listOf(
+                FrameioInternetHopState.LeavingCamera,
+                FrameioInternetHopState.WaitingForInternet,
+                FrameioInternetHopState.Online,
+                FrameioInternetHopState.RejoiningCamera,
+            )
+        retained.forEach { state ->
+            assertTrue(
+                frameioHopKeepsCameraLibraryMounted(
+                    state,
+                    rejoinedConnectionObserved = false,
+                ),
+            )
+        }
+
+        assertFalse(
+            frameioHopKeepsCameraLibraryMounted(
+                FrameioInternetHopState.Idle,
+                rejoinedConnectionObserved = false,
+            ),
+        )
+        assertTrue(
+            frameioHopKeepsCameraLibraryMounted(
+                rejoinedState(),
+                rejoinedConnectionObserved = false,
+            ),
+        )
+        assertFalse(
+            frameioHopKeepsCameraLibraryMounted(
+                rejoinedState(),
+                rejoinedConnectionObserved = true,
+            ),
+        )
+        assertFalse(
+            frameioHopKeepsCameraLibraryMounted(
+                FrameioInternetHopState.Failed("failed"),
+                rejoinedConnectionObserved = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `offline-only browser never fabricates a camera from retained Frameio state`() {
+        assertFalse(
+            effectiveMediaCameraConnection(
+                cameraSessionAvailable = false,
+                cameraConnected = false,
+                frameioInternetHopState = FrameioInternetHopState.LeavingCamera,
+                rejoinedConnectionObserved = false,
+            ),
+        )
+        assertFalse(
+            effectiveMediaCameraConnection(
+                cameraSessionAvailable = false,
+                cameraConnected = false,
+                frameioInternetHopState = rejoinedState(),
+                rejoinedConnectionObserved = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `connected session always lists the camera regardless of sticky offline prefs`() {
+        assertEquals(
+            MediaLibrarySource.CAMERA,
+            mediaLibrarySourceForConnection(cameraConnected = true),
+        )
+        assertEquals(
+            MediaLibrarySource.LOCAL,
+            mediaLibrarySourceForConnection(cameraConnected = false),
+        )
+    }
+
+    @Test
+    fun `camera listing persists core wire records without reclassifying filenames`() {
+        val preferences = MemoryPreferences()
+        val index = MediaLibraryIndex(preferences)
+        val still = clip(handle = 12, filename = "OBJECT.DATA", kind = NikonMediaContentKind.STILL_PHOTO)
+        val proxy =
+            clip(handle = 13, filename = "UNUSUAL.NAME", kind = NikonMediaContentKind.PLAYABLE_PROXY)
+                .copy(sourcePixelWidth = 6_048, sourcePixelHeight = 3_402)
+
+        index.rememberCameraListing("ZR-6001234", listOf(still, proxy))
+
+        assertEquals(listOf(proxy, still), index.persistedClips("ZR-6001234"))
+        assertEquals(NikonMediaContentKind.STILL_PHOTO, index.persistedClips("ZR-6001234")[1].contentKind)
+        assertEquals(
+            NikonStillPreviewStrategy.PROGRESSIVE,
+            index.persistedClips("ZR-6001234")[1].stillPhoto?.previewStrategy,
+        )
+        assertEquals(6_048, index.persistedClips("ZR-6001234")[0].sourcePixelWidth)
+        assertEquals(3_402, index.persistedClips("ZR-6001234")[0].sourcePixelHeight)
+    }
+
+    @Test
+    fun `listing merge retains a previously indexed local object`() {
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val older = clip(handle = 1, filename = "OLDER.BIN", captureDate = "20260713T101010")
+        val latest = clip(handle = 2, filename = "LATEST.BIN", captureDate = "20260714T101010")
+
+        index.rememberCameraListing("camera", listOf(older))
+        index.rememberCameraListing("camera", listOf(latest))
+
+        assertEquals(listOf(latest, older), index.persistedClips("camera"))
+    }
+
+    @Test
+    fun `incremental proxy delta removes the paired R3D from persistence`() {
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val master = clip(handle = 7, filename = "A001.R3D", kind = NikonMediaContentKind.R3D_MASTER)
+        val proxy = clip(handle = 8, filename = "A001.MP4")
+
+        index.rememberCameraListing("camera", listOf(master))
+        index.rememberCameraListing(
+            cameraID = "camera",
+            clips = listOf(proxy),
+            removedObjects = listOf(NikonMediaObjectIdentity(master)),
+        )
+
+        assertEquals(listOf(proxy), index.persistedClips("camera"))
+    }
+
+    @Test
+    fun `camera index retains history beyond the former 1024 record cap`() {
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val clips =
+            (1L..1_300L).map { handle ->
+                clip(
+                    handle = handle,
+                    filename = "C${handle.toString().padStart(4, '0')}.MOV",
+                    captureDate = "20260715T${(handle % 24).toString().padStart(2, '0')}0000",
+                )
+            }
+
+        index.rememberCameraListing("camera", clips)
+
+        assertEquals(1_300, index.persistedClips("camera").size)
+        assertTrue(index.persistedClips("camera").any { it.handle == 1L })
+        assertTrue(index.persistedClips("camera").any { it.handle == 1_300L })
+    }
+
+    @Test
+    fun `paged listing checkpoints encode one final unbounded catalog`() {
+        val preferences = MemoryPreferences()
+        val index = MediaLibraryIndex(preferences)
+        val checkpoint = index.beginCameraListing("camera")
+
+        (1L..1_280L).chunked(32).forEach { handles ->
+            checkpoint.applyPage(
+                addedClips =
+                    handles.map { handle ->
+                        clip(handle, "C${handle.toString().padStart(4, '0')}.MOV")
+                    },
+                removedObjects = emptyList(),
+            )
+        }
+        checkpoint.commit()
+
+        // One catalog encode plus the first-time indexed-cameras registry write.
+        assertEquals(2, preferences.writeCount)
+        assertEquals(1_280, index.persistedClips("camera").size)
+    }
+
+    @Test
+    fun `a complete pass drops clips deleted in-camera and keeps the downloaded ones`() {
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val stillOnCard = clip(1, "A001.MOV")
+        val deletedInCamera = clip(2, "A002.MOV")
+        val deletedButDownloaded = clip(3, "A003.MOV")
+        index.rememberCameraListing(
+            "camera",
+            listOf(stillOnCard, deletedInCamera, deletedButDownloaded),
+        )
+
+        index.beginCameraListing("camera").apply {
+            applyPage(listOf(stillOnCard), emptyList())
+            commit(prunesUnlistedClips = true) { it.handle == deletedButDownloaded.handle }
+        }
+
+        assertEquals(
+            listOf(stillOnCard.handle, deletedButDownloaded.handle),
+            index.persistedClips("camera").map { it.handle }.sorted(),
+        )
+    }
+
+    @Test
+    fun `a complete pass replaces a reused PTP handle with the new identity`() {
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val stale =
+            clip(
+                handle = 1,
+                filename = "OLD.JPG",
+                kind = NikonMediaContentKind.STILL_PHOTO,
+                captureDate = "20260101T120000",
+            )
+        val fresh =
+            clip(
+                handle = 1,
+                filename = "NEW.JPG",
+                kind = NikonMediaContentKind.STILL_PHOTO,
+                captureDate = "20260818T090000",
+            )
+        index.rememberCameraListing("camera", listOf(stale))
+
+        index.beginCameraListing("camera").apply {
+            applyPage(listOf(fresh), emptyList())
+            commit(prunesUnlistedClips = true)
+        }
+
+        assertEquals(listOf("NEW.JPG"), index.persistedClips("camera").map { it.filename })
+    }
+
+    @Test
+    fun `cache clear drops camera catalogs and keeps favorites`() {
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val clip = clip(handle = 4, filename = "C0001.MOV")
+        index.rememberCameraListing("serial-a", listOf(clip))
+        index.setFavorite("serial-a", clip, favorite = true)
+
+        index.clearCameraCatalogs()
+
+        assertTrue(index.persistedClips("serial-a").isEmpty())
+        assertEquals(setOf(clip.libraryKey("serial-a")), index.favoriteIDs("serial-a"))
+    }
+
+    @Test
+    fun `an interrupted pass never prunes the clips it has not reached`() {
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val first = clip(1, "A001.MOV")
+        val notYetListed = clip(2, "A002.MOV")
+        index.rememberCameraListing("camera", listOf(first, notYetListed))
+
+        // The paging failure path commits what it has; the rest of the card is simply unknown.
+        index.beginCameraListing("camera").apply {
+            applyPage(listOf(first), emptyList())
+            commit()
+        }
+
+        assertEquals(2, index.persistedClips("camera").size)
+    }
+
+    @Test
+    fun `resolved size written while pages load survives the final checkpoint commit`() {
+        val preferences = MemoryPreferences()
+        val index = MediaLibraryIndex(preferences)
+        val sentinel = clip(1, "LARGE.MOV").copy(sizeBytes = 0xFFFF_FFFFL)
+        val laterPage = clip(2, "LATER.MOV")
+        val checkpoint = index.beginCameraListing("camera")
+        checkpoint.applyPage(listOf(sentinel), emptyList())
+
+        // Opening the first incremental card resolves its true 64-bit length
+        // before the remaining camera pages and final catalog commit finish.
+        index.rememberResolvedObjectSize("camera", sentinel, 8_000_000_000L)
+        checkpoint.applyPage(listOf(laterPage), emptyList())
+        val writesBeforeFinalCommit = preferences.writeCount
+        checkpoint.commit()
+
+        assertEquals(writesBeforeFinalCommit + 1, preferences.writeCount)
+        assertEquals(
+            8_000_000_000L,
+            index.persistedClips("camera").first { it.handle == sentinel.handle }.sizeBytes,
+        )
+        assertEquals(2, index.persistedClips("camera").size)
+    }
+
+    @Test
+    fun `dynamic host refresh keeps the saved profile linked to its media bucket`() {
+        val original =
+            SavedCameraRecord(
+                host = "172.20.10.2",
+                cameraName = "ZR_6001234",
+                transport = SavedCameraTransport.PHONE_HOTSPOT,
+                lastSeenAtEpochMillis = 1L,
+                wifiSsid = null,
+            )
+        val refreshed =
+            SavedCameraRecords.upserting(
+                host = "172.20.10.7",
+                cameraName = "ZR_6001234",
+                transport = SavedCameraTransport.PHONE_HOTSPOT,
+                lastSeenAtEpochMillis = 2L,
+                wifiSsid = null,
+                records = listOf(original),
+            ).single()
+        val index = MediaLibraryIndex(MemoryPreferences())
+        index.rememberCameraBucket(original.id, "serial-bucket", "A camera")
+
+        assertEquals(original.id, refreshed.id)
+        assertEquals(
+            listOf("serial-bucket"),
+            index.registeredCameraBuckets(listOf(refreshed.id)).map { it.cameraID },
+        )
+    }
+
+    @Test
+    fun `disconnected buckets preserve saved camera order and reject stale cache entries`() {
+        withStore { _, store ->
+            val index = MediaLibraryIndex(MemoryPreferences())
+            val first = clip(handle = 1, filename = "A001.MOV").copy(sizeBytes = 3)
+            val second =
+                clip(handle = 2, filename = "B001.JPG", kind = NikonMediaContentKind.STILL_PHOTO)
+                    .copy(sizeBytes = 4)
+            index.rememberCameraListing("serial-a", listOf(first))
+            index.rememberCameraListing("serial-b", listOf(second))
+            index.rememberCameraBucket("saved-a", "serial-a", "Camera A")
+            index.rememberCameraBucket("saved-b", "serial-b", "Camera B")
+            store.openEntry("serial-a", MediaCacheObjectIdentity(first), 3).apply {
+                append(0, byteArrayOf(1, 2, 3))
+                complete()
+            }
+            store.openEntry("serial-b", MediaCacheObjectIdentity(second), 4).apply {
+                append(0, byteArrayOf(1, 2, 3, 4))
+                complete()
+            }
+
+            val available =
+                index.completedCameraBuckets(listOf("saved-b", "saved-a", "removed"), store)
+
+            assertEquals(listOf("saved-b", "saved-a"), available.map { it.savedCameraID })
+            assertEquals(listOf("serial-b", "serial-a"), available.map { it.cameraID })
+            val stale =
+                store.completedEntryOrNull("serial-a", MediaCacheObjectIdentity(first), 3)
+            assertNotNull(stale)
+            Files.delete(stale.finalPath)
+            assertEquals(
+                listOf("saved-b"),
+                index.completedCameraBuckets(listOf("saved-a", "saved-b"), store)
+                    .map { it.savedCameraID },
+            )
+        }
+    }
+
+    @Test
+    fun `proxy delta preserves an older cached record whose PTP handle was reused`() {
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val historical =
+            clip(
+                handle = 7,
+                filename = "OLDER.R3D",
+                captureDate = "20260701T120000",
+                kind = NikonMediaContentKind.R3D_MASTER,
+            )
+        val currentMaster =
+            clip(
+                handle = 7,
+                filename = "A001.R3D",
+                captureDate = "20260715T120000",
+                kind = NikonMediaContentKind.R3D_MASTER,
+            )
+        val proxy = clip(handle = 8, filename = "A001.MP4")
+        index.rememberCameraListing("camera", listOf(historical))
+        index.rememberCameraListing("camera", listOf(currentMaster))
+
+        index.rememberCameraListing(
+            cameraID = "camera",
+            clips = listOf(proxy),
+            removedObjects = listOf(NikonMediaObjectIdentity(currentMaster)),
+        )
+
+        assertEquals(listOf(proxy, historical), index.persistedClips("camera"))
+    }
+
+    @Test
+    fun `favorites are camera scoped and persist by full object identity`() {
+        val preferences = MemoryPreferences()
+        val index = MediaLibraryIndex(preferences)
+        val first = clip(handle = 7, filename = "C0007.MOV")
+        val sameFilenameElsewhere = first.copy(storageId = 2, handle = 8)
+
+        val favorites = index.toggleFavorite("camera-a", first)
+
+        assertTrue(first.libraryKey("camera-a") in favorites)
+        assertFalse(sameFilenameElsewhere.libraryKey("camera-a") in favorites)
+        val restored = MediaLibraryIndex(preferences)
+        assertTrue(first.libraryKey("camera-a") in restored.favoriteIDs("camera-a"))
+        assertTrue(restored.favoriteIDs("camera-b").isEmpty())
+    }
+
+    @Test
+    fun `setFavorite mirrors a camera star into the favorite set and clears it at zero`() {
+        val preferences = MemoryPreferences()
+        val index = MediaLibraryIndex(preferences)
+        val shot = clip(handle = 7, filename = "DSC_0007.JPG", kind = NikonMediaContentKind.STILL_PHOTO)
+
+        // A >= 1-star write favorites the shot; a 0-star write clears it. Offline path — only
+        // the local set is touched, no camera involved.
+        val starred = index.setFavorite("camera-a", shot, favorite = true)
+        assertTrue(shot.libraryKey("camera-a") in starred)
+        assertTrue(shot.libraryKey("camera-a") in MediaLibraryIndex(preferences).favoriteIDs("camera-a"))
+
+        val cleared = index.setFavorite("camera-a", shot, favorite = false)
+        assertFalse(shot.libraryKey("camera-a") in cleared)
+        assertTrue(MediaLibraryIndex(preferences).favoriteIDs("camera-a").isEmpty())
+    }
+
+    @Test
+    fun `a shot favorited by a rating write surfaces under the Favorites filter`() {
+        val cameraID = "camera"
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val rated = clip(handle = 1, filename = "DSC_0001.JPG", kind = NikonMediaContentKind.STILL_PHOTO)
+        val other = clip(handle = 2, filename = "DSC_0002.JPG", kind = NikonMediaContentKind.STILL_PHOTO)
+
+        val favorites = index.setFavorite(cameraID, rated, favorite = true)
+
+        assertEquals(
+            listOf(rated),
+            MediaLibraryFiltering.displayed(
+                listOf(rated, other),
+                MediaLibraryCategory.FAVORITES,
+                favorites,
+                cameraID,
+                MonitorMediaSort.NAME,
+            ),
+        )
+    }
+
+    @Test
+    fun `rating a pair favorites the jpeg row and leaves the raw sibling untouched`() {
+        val cameraID = "camera"
+        val index = MediaLibraryIndex(MemoryPreferences())
+        val jpeg = clip(handle = 1, filename = "DSC_0001.JPG", kind = NikonMediaContentKind.STILL_PHOTO)
+        val raw = clip(handle = 2, filename = "DSC_0001.NEF", kind = NikonMediaContentKind.STILL_PHOTO)
+
+        val favorites = index.setFavorite(cameraID, jpeg, favorite = true)
+
+        assertTrue(jpeg.libraryKey(cameraID) in favorites)
+        assertFalse(raw.libraryKey(cameraID) in favorites)
+    }
+
+    @Test
+    fun `categories and sort consume shared core actions instead of extensions`() {
+        val cameraID = "camera"
+        val proxy = clip(handle = 1, filename = "PHOTO.NEF", kind = NikonMediaContentKind.PLAYABLE_PROXY)
+        val still = clip(handle = 2, filename = "VIDEO.MOV", kind = NikonMediaContentKind.STILL_PHOTO)
+        val master = clip(handle = 3, filename = "MASTER.WHATEVER", kind = NikonMediaContentKind.R3D_MASTER)
+        val unknown = clip(handle = 4, filename = "UNKNOWN.JPG", kind = NikonMediaContentKind.UNSUPPORTED)
+        val clips = listOf(proxy, still, master, unknown)
+
+        assertEquals(
+            listOf(master, proxy),
+            MediaLibraryFiltering.displayed(
+                clips,
+                MediaLibraryCategory.VIDEOS,
+                emptySet(),
+                cameraID,
+                MonitorMediaSort.NAME,
+            ),
+        )
+        assertEquals(
+            listOf(still),
+            MediaLibraryFiltering.displayed(
+                clips,
+                MediaLibraryCategory.PHOTOS,
+                emptySet(),
+                cameraID,
+                MonitorMediaSort.NAME,
+            ),
+        )
+        assertEquals(
+            listOf(master),
+            MediaLibraryFiltering.displayed(
+                clips,
+                MediaLibraryCategory.FAVORITES,
+                setOf(master.libraryKey(cameraID)),
+                cameraID,
+                MonitorMediaSort.NAME,
+            ),
+        )
+    }
+
+    @Test
+    fun `raw cell collapses into its jpeg pair and one item survives per pair`() {
+        val cameraID = "camera"
+        val jpeg = clip(handle = 1, filename = "DSC_0001.JPG", kind = NikonMediaContentKind.STILL_PHOTO)
+        val raw = clip(handle = 2, filename = "DSC_0001.NEF", kind = NikonMediaContentKind.STILL_PHOTO)
+        val lonelyRaw =
+            clip(handle = 3, filename = "DSC_0002.NEF", kind = NikonMediaContentKind.STILL_PHOTO)
+        val clips = listOf(jpeg, raw, lonelyRaw)
+
+        // One item per pair: the JPEG carries the cell, the same-shot RAW
+        // never renders its own; an unpaired RAW keeps its cell.
+        assertEquals(
+            listOf(jpeg, lonelyRaw),
+            MediaLibraryFiltering.displayed(
+                clips,
+                MediaLibraryCategory.ALL,
+                emptySet(),
+                cameraID,
+                MonitorMediaSort.NAME,
+            ),
+        )
+        // Suppression is keyed on the filter survivors: when a chip keeps only
+        // the cached NEF (its JPEG side filtered away), the RAW surfaces its
+        // own cell instead of vanishing entirely.
+        assertEquals(
+            listOf(raw),
+            MediaLibraryFiltering.displayed(
+                listOf(jpeg, raw),
+                MediaLibraryCategory.FAVORITES,
+                setOf(raw.libraryKey(cameraID)),
+                cameraID,
+                MonitorMediaSort.NAME,
+            ),
+        )
+        // Offline multi-camera library: two cameras' formulaic DSC_0001 stems
+        // never pair across owning buckets.
+        assertEquals(
+            listOf(jpeg, raw),
+            MediaLibraryFiltering.displayed(
+                listOf(jpeg, raw),
+                MediaLibraryCategory.ALL,
+                emptySet(),
+                cameraID,
+                MonitorMediaSort.NAME,
+                ownerOf = { if (it.handle == 1L) "camera-a" else "camera-b" },
+            ),
+        )
+    }
+
+    @Test
+    fun `corrupt persisted controls fall back to a safe camera view`() {
+        val preferences =
+            MemoryPreferences(
+                mapOf(
+                    "view.source" to "NOT_A_SOURCE",
+                    "view.category" to "NOPE",
+                    "view.layout" to "SIDEWAYS",
+                    "view.sort" to "WRONG",
+                    "view.thumbnail-size" to "HUGE",
+                ),
+            )
+
+        assertEquals(MonitorMediaViewOptions(), MediaLibraryIndex(preferences).mediaPreferences("camera").viewOptions())
+    }
+
+    @Test
+    fun `existing favorites and view controls read back through the shared media preferences`() {
+        // The shared owner keeps the keys and newline separator this index always wrote: nothing to rewrite.
+        val favoritesKey = "favorites." + java.security.MessageDigest.getInstance("SHA-256")
+            .digest("camera-a".toByteArray()).joinToString("") { "%02x".format(it) }
+        val preferences =
+            MemoryPreferences(
+                mapOf(
+                    favoritesKey to "b-key\na-key",
+                    "view.category" to "FAVORITES",
+                    "view.layout" to "LIST",
+                    "view.sort" to "NAME",
+                    "view.thumbnail-size" to "LARGE",
+                ),
+            )
+        val shared = MediaLibraryIndex(preferences).mediaPreferences("camera-a")
+
+        assertEquals(setOf("a-key", "b-key"), shared.favorites())
+        assertEquals(setOf("a-key", "b-key"), MediaLibraryIndex(preferences).favoriteIDs("camera-a"))
+        assertEquals(
+            MonitorMediaViewOptions(MonitorMediaCategoryFilter.FAVORITES, MonitorMediaSort.NAME,
+                MonitorMediaLayout.LIST, MonitorThumbnailSize.LARGE),
+            shared.viewOptions(),
+        )
+        shared.saveFavorites(setOf("c-key", "a-key"))
+        assertEquals("a-key\nc-key", preferences.value(favoritesKey))
+        assertTrue(MediaLibraryIndex(preferences).favoriteIDs("camera-b").isEmpty())
+    }
+
+    @Test
+    fun `format resolution date and slot filters follow shared metadata fallbacks`() {
+        val todayMov =
+            clip(1, "A001.MOV", captureDate = "20260715T101010")
+                .copy(storageId = 11, pixelWidth = 3_840)
+        val todayMp4 =
+            clip(2, "A002.MP4", captureDate = "20260715T111010")
+                .copy(storageId = 11, pixelWidth = 3_840)
+        val oldMov =
+            clip(3, "A003.MOV", captureDate = "20260714T101010")
+                .copy(storageId = 22, pixelWidth = 6_048)
+        val missingWidth =
+            clip(4, "A004_6K.MOV", captureDate = "20260715T121010")
+                .copy(storageId = 11, pixelWidth = 0)
+        val filters =
+            MediaLibraryFilters(
+                formats = setOf(MediaFormatFilter.MOV),
+                resolutions = setOf(MediaResolutionFilter.FOUR_K),
+                dateWindow = MediaDateWindowFilter.TODAY,
+                storageId = 11,
+            )
+
+        val displayed =
+            MediaLibraryFiltering.displayed(
+                clips = listOf(todayMov, todayMp4, oldMov, missingWidth),
+                category = MediaLibraryCategory.ALL,
+                favoriteIDs = emptySet(),
+                cameraID = "camera",
+                sortOrder = MonitorMediaSort.NAME,
+                filters = filters,
+                today = LocalDate.of(2026, 7, 15),
+            )
+
+        assertEquals(listOf(todayMov), displayed)
+        assertEquals(4, filters.activeCount)
+        assertEquals(MediaFormatFilter.MOV, todayMov.formatFilter())
+        assertEquals(MediaFormatFilter.MOV, todayMov.copy(filename = "A001.M4V").formatFilter())
+        assertEquals(MediaResolutionFilter.SIX_K, missingWidth.resolutionFilter())
+    }
+
+    @Test
+    fun `resolution prefers paired R3D source then proxy pixels then filename`() {
+        val paired =
+            clip(1, "SHOT_4K.MP4")
+                .copy(pixelWidth = 1_920, sourcePixelWidth = 6_048, sourcePixelHeight = 3_402)
+        val proxyOnly = clip(2, "SHOT_6K.MP4").copy(pixelWidth = 3_840)
+        val filenameOnly = clip(3, "SHOT_5.4K.MP4").copy(pixelWidth = 0)
+        val filename54Token = clip(4, "SHOT_54K.MOV").copy(pixelWidth = 0)
+        val filenameUhd = clip(5, "SHOT_UHD.MOV").copy(pixelWidth = 0)
+        val filenameHd = clip(6, "SHOT_1080.MOV").copy(pixelWidth = 0)
+
+        assertEquals(MediaResolutionFilter.SIX_K, paired.resolutionFilter())
+        assertEquals(MediaResolutionFilter.FOUR_K, proxyOnly.resolutionFilter())
+        assertEquals(MediaResolutionFilter.FIVE_FOUR_K, filenameOnly.resolutionFilter())
+        assertEquals(MediaResolutionFilter.FIVE_FOUR_K, filename54Token.resolutionFilter())
+        assertEquals(MediaResolutionFilter.FOUR_K, filenameUhd.resolutionFilter())
+        assertEquals(MediaResolutionFilter.HD, filenameHd.resolutionFilter())
+    }
+
+    @Test
+    fun `filter groups use OR within a group and stale camera slots clear safely`() {
+        val hd = clip(1, "A001.MOV").copy(storageId = 11, pixelWidth = 1_920)
+        val sixK = clip(2, "A002.MP4").copy(storageId = 22, pixelWidth = 6_048)
+        val filters =
+            MediaLibraryFilters(
+                formats = setOf(MediaFormatFilter.MOV, MediaFormatFilter.MP4),
+                resolutions = setOf(MediaResolutionFilter.HD, MediaResolutionFilter.SIX_K),
+                storageId = 11,
+            )
+
+        assertEquals(
+            listOf(hd),
+            MediaLibraryFiltering.displayed(
+                listOf(hd, sixK),
+                MediaLibraryCategory.ALL,
+                emptySet(),
+                "camera",
+                MonitorMediaSort.NAME,
+                filters,
+                LocalDate.of(2026, 7, 15),
+            ),
+        )
+        assertEquals(filters, filters.retainingAvailableStorage(MediaLibrarySource.CAMERA, listOf(hd)))
+        assertNull(
+            filters.retainingAvailableStorage(MediaLibrarySource.CAMERA, listOf(sixK)).storageId,
+        )
+        assertNull(filters.retainingAvailableStorage(MediaLibrarySource.LOCAL, listOf(hd)).storageId)
+    }
+
+    @Test
+    fun `photos category offers still formats and never a video chip`() {
+        val jpeg = still(1, "DSC_0001.JPG", "JPEG")
+        val nef = still(2, "DSC_0002.NEF", "NEF")
+        // Nikon writes HEIF as `.HIF`; the shared core supplies the HEIF label off the wire.
+        val hif = still(3, "DSC_0003.HIF", "HEIF")
+
+        val options = filterOptions(listOf(jpeg, nef, hif), TODAY)
+
+        assertEquals(
+            listOf(MediaFormatFilter.JPEG, MediaFormatFilter.HEIF, MediaFormatFilter.NEF),
+            options.formats,
+        )
+        // The reported defect: video containers and video resolution buckets on a stills listing.
+        assertFalse(MediaFormatFilter.MOV in options.formats)
+        assertFalse(MediaFormatFilter.MP4 in options.formats)
+        assertTrue(options.resolutions.isEmpty())
+    }
+
+    @Test
+    fun `videos category keeps container and resolution chips`() {
+        val mov = clip(1, "A001.MOV").copy(pixelWidth = 6_048)
+        val mp4 = clip(2, "A002.MP4").copy(pixelWidth = 1_920)
+
+        val options = filterOptions(listOf(mov, mp4), TODAY)
+
+        assertEquals(listOf(MediaFormatFilter.MOV, MediaFormatFilter.MP4), options.formats)
+        assertEquals(listOf(MediaResolutionFilter.HD, MediaResolutionFilter.SIX_K), options.resolutions)
+        assertTrue(options.photoSizes.isEmpty())
+    }
+
+    @Test
+    fun `a chip that matches nothing or everything is not offered`() {
+        val allMov =
+            listOf(
+                clip(1, "A001.MOV").copy(pixelWidth = 1_920),
+                clip(2, "A002.MOV").copy(pixelWidth = 1_920),
+            )
+
+        val options = filterOptions(allMov, TODAY)
+
+        // No MP4 is listed, and a MOV chip would select every row — neither filters anything.
+        assertTrue(options.formats.isEmpty())
+        assertTrue(options.resolutions.isEmpty())
+        assertTrue(options.isEmpty)
+        assertTrue(filterOptions(emptyList(), TODAY).isEmpty)
+    }
+
+    @Test
+    fun `still sizes rank against the sizes present and are omitted without dimensions`() {
+        val large = still(1, "DSC_0001.JPG", "JPEG").copy(pixelWidth = 6_048)
+        val medium = still(2, "DSC_0002.JPG", "JPEG").copy(pixelWidth = 4_528)
+        val small = still(3, "DSC_0003.JPG", "JPEG").copy(pixelWidth = 3_024)
+        val widths = listOf(large, medium, small).stillPixelWidths()
+
+        assertEquals(MediaPhotoSizeFilter.LARGE, large.photoSizeFilter(widths))
+        assertEquals(MediaPhotoSizeFilter.MEDIUM, medium.photoSizeFilter(widths))
+        assertEquals(MediaPhotoSizeFilter.SMALL, small.photoSizeFilter(widths))
+        assertEquals(
+            listOf(MediaPhotoSizeFilter.LARGE, MediaPhotoSizeFilter.MEDIUM, MediaPhotoSizeFilter.SMALL),
+            filterOptions(listOf(large, medium, small), TODAY).photoSizes,
+        )
+
+        // The camera reported no dimensions: no SIZE chip is faked.
+        val unsized =
+            listOf(
+                still(4, "DSC_0004.JPG", "JPEG").copy(pixelWidth = 0),
+                still(5, "DSC_0005.NEF", "NEF").copy(pixelWidth = 0),
+            )
+        assertNull(unsized.first().photoSizeFilter(unsized.stillPixelWidths()))
+        assertTrue(filterOptions(unsized, TODAY).photoSizes.isEmpty())
+        // One size present partitions nothing.
+        assertTrue(filterOptions(listOf(large, large.copy(handle = 9)), TODAY).photoSizes.isEmpty())
+    }
+
+    @Test
+    fun `more than three still sizes drops the whole size row`() {
+        // A mixed FX and DX-crop card has four distinct widths. Nikon's image size is a
+        // three-way, so ranking would strand the fourth behind chips claiming to cover everything.
+        val fxAndDX = listOf(6_048, 4_528, 3_984, 3_024)
+        val clips =
+            fxAndDX.mapIndexed { index, width ->
+                still(index + 1L, "DSC_000$index.JPG", "JPEG").copy(pixelWidth = width)
+            }
+        val widths = clips.stillPixelWidths()
+
+        clips.forEach { assertNull(it.photoSizeFilter(widths)) }
+        assertTrue(filterOptions(clips, TODAY).photoSizes.isEmpty())
+    }
+
+    @Test
+    fun `date windows cover today seven and thirty days and only when they split the listing`() {
+        fun daysAgo(days: Long) = TODAY.minusDays(days).format(DateTimeFormatter.BASIC_ISO_DATE) + "T120000"
+
+        assertTrue(MediaDateWindowFilter.TODAY.contains(daysAgo(0), TODAY))
+        assertFalse(MediaDateWindowFilter.TODAY.contains(daysAgo(1), TODAY))
+        assertTrue(MediaDateWindowFilter.LAST_7_DAYS.contains(daysAgo(6), TODAY))
+        assertFalse(MediaDateWindowFilter.LAST_7_DAYS.contains(daysAgo(7), TODAY))
+        assertTrue(MediaDateWindowFilter.LAST_30_DAYS.contains(daysAgo(29), TODAY))
+        assertFalse(MediaDateWindowFilter.LAST_30_DAYS.contains(daysAgo(30), TODAY))
+        for (malformed in listOf("", "2026", "not-a-date", "20261332T120000")) {
+            assertFalse(MediaDateWindowFilter.LAST_30_DAYS.contains(malformed, TODAY))
+        }
+
+        val spread =
+            listOf(
+                clip(1, "A001.MOV", captureDate = daysAgo(0)),
+                clip(2, "A002.MP4", captureDate = daysAgo(3)),
+                clip(3, "A003.MP4", captureDate = daysAgo(90)),
+            )
+        assertEquals(
+            listOf(
+                MediaDateWindowFilter.TODAY,
+                MediaDateWindowFilter.LAST_7_DAYS,
+                MediaDateWindowFilter.LAST_30_DAYS,
+            ),
+            filterOptions(spread, TODAY).dateWindows,
+        )
+        // Everything shot today: every window selects every row, so none of them filters.
+        val allToday =
+            listOf(
+                clip(1, "A001.MOV", captureDate = daysAgo(0)),
+                clip(2, "A002.MP4", captureDate = daysAgo(0)),
+            )
+        assertTrue(filterOptions(allToday, TODAY).dateWindows.isEmpty())
+    }
+
+    @Test
+    fun `switching to a category that cannot offer a chip clears it`() {
+        val photos =
+            listOf(still(1, "DSC_0001.JPG", "JPEG"), still(2, "DSC_0002.NEF", "NEF"))
+        val stale =
+            MediaLibraryFilters(
+                formats = setOf(MediaFormatFilter.MOV, MediaFormatFilter.JPEG),
+                resolutions = setOf(MediaResolutionFilter.SIX_K),
+                dateWindow = MediaDateWindowFilter.TODAY,
+                storageId = 11,
+            )
+
+        val retained = stale.retainingOfferedChips(filterOptions(photos, TODAY))
+
+        assertEquals(setOf(MediaFormatFilter.JPEG), retained.formats)
+        assertTrue(retained.resolutions.isEmpty())
+        assertNull(retained.dateWindow)
+        // Card selection is scoped by the inserted cards, not by the category's media.
+        assertEquals(11L, retained.storageId)
+    }
+
+    private fun still(
+        handle: Long,
+        filename: String,
+        formatLabel: String,
+    ): NikonMediaClipRecord =
+        clip(handle, filename, NikonMediaContentKind.STILL_PHOTO)
+            .copy(
+                pixelWidth = 6_048,
+                pixelHeight = 4_032,
+                stillPhoto = NikonStillPhotoClassification(formatLabel, NikonStillPreviewStrategy.PROGRESSIVE),
+            )
+
+    @Test
+    fun `delivery metadata summary contains only bounded clip facts`() {
+        val summary =
+            mediaDeliveryMetadataSummary(
+                listOf(clip(1, "A001.MOV", captureDate = "20260715T101010")),
+            )
+
+        assertEquals("A001.MOV · 20260715T101010 · 100 B", summary)
+        assertFalse(summary.contains("camera"))
+
+        val bounded =
+            mediaDeliveryMetadataSummary(
+                (1..40).map { index -> clip(index.toLong(), "A${index.toString().padStart(3, '0')}.MOV") },
+            )
+        assertEquals(33, bounded.lines().size)
+        assertTrue(bounded.endsWith("+8 more selected items"))
+    }
+
+    @Test
+    fun `complete lookup reads one identity-derived artifact and never creates a part`() {
+        withStore { root, store ->
+            val identity = MediaCacheObjectIdentity(1, 7, "20260714T101010", "C0007.MOV")
+            val entry = store.openEntry("camera", identity, 3)
+            entry.append(0, byteArrayOf(1, 2, 3))
+            entry.complete()
+
+            val before = artifactCount(root)
+            val found = store.completedEntryOrNull("camera", identity, 3)
+            val missing =
+                store.completedEntryOrNull(
+                    "camera",
+                    identity.copy(handle = 8, filename = "C0008.MOV"),
+                    3,
+                )
+
+            assertNotNull(found)
+            assertEquals(MediaCacheState.COMPLETE, found.state)
+            assertNull(missing)
+            assertEquals(before, artifactCount(root))
+
+            Files.delete(found.finalPath)
+
+            assertNull(store.completedEntryOrNull("camera", identity, 3))
+            assertEquals(0, artifactCount(root))
+        }
+    }
+
+    private fun clip(
+        handle: Long,
+        filename: String,
+        kind: NikonMediaContentKind = NikonMediaContentKind.PLAYABLE_PROXY,
+        captureDate: String = "20260714T101010",
+    ): NikonMediaClipRecord =
+        NikonMediaClipRecord(
+            handle = handle,
+            storageId = 1,
+            sizeBytes = 100,
+            captureDate = captureDate,
+            pixelWidth = 3840,
+            pixelHeight = 2160,
+            filename = filename,
+            contentKind = kind,
+            // Label agrees with the extension, as the listing wire does in production.
+            stillPhoto =
+                if (kind == NikonMediaContentKind.STILL_PHOTO) {
+                    val label =
+                        when (filename.substringAfterLast('.').lowercase()) {
+                            "nef", "nrw", "dng" -> "NEF"
+                            "hif", "heif", "heic" -> "HEIF"
+                            "tif", "tiff" -> "TIFF"
+                            "png" -> "PNG"
+                            else -> "JPEG"
+                        }
+                    NikonStillPhotoClassification(label, NikonStillPreviewStrategy.PROGRESSIVE)
+                } else {
+                    null
+                },
+        )
+
+    private fun rejoinedState(): FrameioInternetHopState.Rejoined =
+        FrameioInternetHopState.Rejoined(
+            FrameioCameraRejoinEvidence("Nikon ZR", "ZR", verifiedAtEpochMillis = 1L),
+        )
+
+    private fun withStore(block: (Path, MediaCacheStore) -> Unit) {
+        val root = createTempDirectory("openzcine-media-library")
+        try {
+            block(root, MediaCacheStore(root.resolve("no-backup/media-cache")))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    private fun artifactCount(root: Path): Long =
+        Files.walk(root).use { paths ->
+            paths.filter { path -> Files.isRegularFile(path) }.count()
+        }
+
+    private class MemoryPreferences(initial: Map<String, String> = emptyMap()) : MediaLibraryPreferences {
+        private val values = initial.toMutableMap()
+        var writeCount = 0
+            private set
+
+        override fun getString(key: String): String? = values[key]
+
+        fun value(key: String): String? = values[key]
+
+        override fun putString(key: String, value: String?) {
+            writeCount += 1
+            if (value == null) values.remove(key) else values[key] = value
+        }
+    }
+}
+
+/** The chips the production gallery projection offers for [clips]. */
+private fun filterOptions(clips: List<NikonMediaClipRecord>, today: LocalDate): MediaFilterOptions =
+    NikonAppGalleryProjection(
+        clips, emptyMap(), MediaLibraryCategory.ALL, emptySet(), "camera", MonitorMediaSort.NEWEST, today = today,
+    ).filterOptions
+
+private fun NikonMediaClipRecord.resolutionFilter(): MediaResolutionFilter? =
+    NikonAndroidGalleryProjectionPolicy.resolutionKey(this)?.let { key -> MediaResolutionFilter.entries.first { it.title == key } }
+
+private fun List<NikonMediaClipRecord>.stillPixelWidths(): List<Int> = NikonAndroidGalleryProjectionPolicy.stillWidths(this)
+
+private fun NikonMediaClipRecord.photoSizeFilter(presentWidths: List<Int>): MediaPhotoSizeFilter? =
+    NikonAndroidGalleryProjectionPolicy.photoSizeKey(this, presentWidths)
+        ?.let { key -> MediaPhotoSizeFilter.entries.first { it.title == key } }

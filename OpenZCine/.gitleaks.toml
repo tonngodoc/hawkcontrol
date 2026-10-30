@@ -1,0 +1,45 @@
+# gitleaks secret-scan config for OpenZCine.
+# Extends the built-in ruleset and allowlists values that are known-safe for
+# this repo. See docs/commit-hygiene.md for the policy this enforces.
+title = "OpenZCine secret scan"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Repo-specific known-safe values and paths"
+regexes = [
+  # Functional PTP-IP pairing friendly-name handed to the camera — not a secret.
+  '''WTU-iPhone''',
+  # Fixed RFC 4122 UUID used only as an idempotency fixture in the relay test history.
+  '''123e4567-e89b-12d3-a456-426614174000''',
+  # Second fixed RFC 4122 UUID used only to test a distinct retry history.
+  '''223e4567-e89b-12d3-a456-426614174000''',
+  # Operator-preference storage keys. They are named `<AREA>_..._KEY = "dotted.path.vN"`, which is
+  # the exact shape `generic-api-key` looks for, and a longer camel-cased one crosses its entropy
+  # threshold where its shorter neighbours do not. Deliberately anchored to the dotted-path form
+  # these keys use rather than allowlisting the `_KEY` name, so a real credential assigned to a
+  # `_KEY` constant is still caught.
+  '''^(assist|display|link|media|monitor|scope)\.[A-Za-z0-9.]+\.v[0-9]+$''',
+  # Fixed UserDefaults key for the phone mount rotation; contains no credential.
+  '''^gyroMountCalibration\.v1$''',
+]
+paths = [
+  # This config talks about secret patterns on purpose.
+  '''\.gitleaks\.toml$''',
+]
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Exact persistent destination preference key, not a credential"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+  '''^frameio\.destination\.v1$''',
+]
+paths = [
+  '''^ios/Runner/Frameio/NikonFrameioDeliveryPorts\.swift$''',
+  '''^ios/RunnerTests/CameraWiFiCredentialStoreTests\.swift$''',
+]

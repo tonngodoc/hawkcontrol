@@ -1,0 +1,445 @@
+package com.opencapture.openzcine.diagnostics
+
+import com.opencapture.opencine.media.DiagnosticJournal
+import java.io.File
+import java.time.Instant
+
+/** Closed, privacy-reviewed breadcrumbs retained for local operator support. */
+internal enum class AndroidDiagnosticEvent(val wireValue: String) {
+    APP_LAUNCHED("app.launched"),
+    APP_FOREGROUND("app.foreground"),
+    APP_BACKGROUND("app.background"),
+    CONNECTION_DISCONNECTED("connection.disconnected"),
+    CONNECTION_CONNECTING("connection.connecting"),
+    CONNECTION_HANDSHAKING("connection.handshaking"),
+    CONNECTION_PAIRING("connection.pairing"),
+    CONNECTION_CONFIRM_ON_CAMERA("connection.confirm-on-camera"),
+    CONNECTION_JOINING_WIFI("connection.joining-wifi"),
+    CONNECTION_RECONNECTING("connection.reconnecting"),
+    CONNECTION_CONNECTED("connection.connected"),
+    CONNECTION_PATH_CAMERA_AP("connection.path.camera-ap"),
+    CONNECTION_PATH_PHONE_HOTSPOT("connection.path.phone-hotspot"),
+    CONNECTION_PATH_USB("connection.path.usb"),
+    MONITOR_PRESENTED("monitor.presented"),
+    MONITOR_DISMISSED("monitor.dismissed"),
+    LIVE_VIEW_STARTED("live-view.started"),
+    GUIDE_PRESENTED("live-guide.presented"),
+    GUIDE_COMPLETED("live-guide.completed"),
+    GUIDE_SKIPPED("live-guide.skipped"),
+    DIAGNOSTICS_EXPORTED("diagnostics.exported"),
+    /** Generic connect failure when a more specific closed code is unavailable. */
+    CONNECTION_FAILED("error.connection.failed"),
+    CONNECTION_WIFI_JOIN_FAILED("error.connection.wifi-join.failed"),
+    CONNECTION_USB_FAILED("error.connection.usb.failed"),
+    CONNECTION_USB_PERMISSION("error.connection.usb.permission"),
+    CONNECTION_PTP_FAILED("error.connection.ptp.failed"),
+    CONNECTION_PAIRING_FAILED("error.connection.pairing.failed"),
+    CONNECTION_RECONNECT_FAILED("error.connection.reconnect.failed"),
+    CONNECTION_EVENT_CHANNEL_ENDED("error.connection.event-channel-ended"),
+
+    // What a USB camera looked like on the last enumeration pass. Closed codes, never the
+    // device path, vendor/product ids or the serial itself — only whether each was RESOLVABLE.
+    //
+    // These exist because the report could not tell three very different failures apart. An
+    // operator declining the permission dialog, a grant the ROM does not make stick, and a
+    // permission that IS held over a serial the ROM will not surface all produced the same
+    // `error.connection.usb.permission` breadcrumb repeated (field report, Redmi Note 12 Pro,
+    // Android 16, build 127). The fix for one of those three is not the fix for the others.
+    USB_ATTACHED_NO_PTP_INTERFACE("usb.attached.no-ptp-interface"),
+    USB_ATTACHED_NEEDS_PERMISSION("usb.attached.needs-permission"),
+    USB_ATTACHED_PERMISSION_DENIED("usb.attached.permission-denied"),
+    /** Permission held, but the ROM would not surface a USB serial descriptor. */
+    USB_ATTACHED_NO_SERIAL("usb.attached.no-serial"),
+    USB_ATTACHED_READY("usb.attached.ready"),
+
+    // USB open / handshake stages. The generic `error.connection.usb.failed`
+    // breadcrumb could not tell a claim failure from a dead interrupt endpoint
+    // from a PTP OpenSession refusal (issue #315).
+    USB_OPEN_DETACHED("usb.open.detached"),
+    USB_OPEN_NO_PERMISSION("usb.open.no-permission"),
+    USB_OPEN_NO_PTP_INTERFACE("usb.open.no-ptp-interface"),
+    USB_OPEN_DEVICE("usb.open.device"),
+    USB_OPEN_CLAIM("usb.open.claim"),
+    USB_OPEN_EVENT_ENDPOINT("usb.open.event-endpoint"),
+    USB_OPEN_CHANGED("usb.open.changed"),
+    USB_RECONNECT_CLOSED_TRANSPORT("usb.reconnect.closed-transport"),
+    USB_RECONNECT_NOT_READY("usb.reconnect.not-ready"),
+    USB_HANDSHAKE_DEVICE_INFO("usb.handshake.device-info"),
+    USB_HANDSHAKE_OPEN_SESSION("usb.handshake.open-session"),
+    USB_HANDSHAKE_APP_MODE("usb.handshake.app-mode"),
+    USB_HANDSHAKE_IDENTIFY("usb.handshake.identify"),
+    USB_HANDSHAKE_WRITE("usb.handshake.write"),
+    USB_HANDSHAKE_READ("usb.handshake.read"),
+    USB_HANDSHAKE_TIMEOUT("usb.handshake.timeout"),
+    USB_HANDSHAKE_CLOSED("usb.handshake.closed"),
+    LIVE_VIEW_FAILED("error.live-view.failed"),
+    LIVE_VIEW_STALLED("warning.live-view.stalled"),
+    // Object star-rating writes. The vocabulary stays closed (no wire code leaks into the log);
+    // the exact code rides the user-facing message. Access-Denied gets its own breadcrumb as the
+    // leading hypothesis for a state-based refusal.
+    RATING_WRITE_ATTEMPTED("rating.write.attempted"),
+    RATING_WRITE_CONFIRMED("rating.write.confirmed"),
+    RATING_WRITE_REFUSED("error.rating.write.refused"),
+    RATING_WRITE_REFUSED_ACCESS_DENIED("error.rating.write.refused.access-denied"),
+
+    // Manual-focus drives (focus-by-wire scrub). Success stays off the log (a
+    // scrub is dozens of drives); only the two actionable failures leave a
+    // trace — the wire code rides the user-facing toast.
+    MF_DRIVE_BUSY_EXHAUSTED("error.mf.drive.busy-exhausted"),
+    MF_DRIVE_REFUSED("error.mf.drive.refused"),
+
+    // A camera property write held the transaction gate unusually long (>1.5s) — the
+    // feed and queued writes stall behind it. The property name rides the connection
+    // log, not the vocabulary.
+    PROPERTY_WRITE_SLOW("camera.write.slow"),
+
+    CONNECTION_GATE_GEN1_FALLBACK("connection.gate.gen1-fallback"),
+    CONNECTION_GATE_UNKNOWN_OPS("connection.gate.unknown-ops"),
+    CONNECTION_JOIN_PREFIX("connection.join.prefix"),
+
+    // Camera-AP credential scanner: on-device OCR could not run. The two codes
+    // separate a recoverable state from a device/build that will never manage
+    // it, so a report distinguishes "retry helped" from "OCR is impossible here".
+    // The exception type and its stack stay in local logcat, never in a report.
+    SCANNER_RECOGNIZER_UNAVAILABLE("error.scanner.recognizer.unavailable"),
+    SCANNER_RECOGNIZER_UNSUPPORTED("error.scanner.recognizer.unsupported"),
+    ;
+
+    companion object {
+        fun fromWireValue(value: String): AndroidDiagnosticEvent? =
+            entries.firstOrNull { it.wireValue == value }
+
+        /**
+         * Maps only closed session/wizard phase tokens. Free-form detail is never accepted —
+         * callers must discard operator- or camera-facing strings before invoking this.
+         */
+        fun fromPhase(phase: String): AndroidDiagnosticEvent? =
+            when (phase) {
+                "handshaking" -> CONNECTION_HANDSHAKING
+                "pairing" -> CONNECTION_PAIRING
+                "confirmOnCamera" -> CONNECTION_CONFIRM_ON_CAMERA
+                "joiningWifi" -> CONNECTION_JOINING_WIFI
+                "reconnecting" -> CONNECTION_RECONNECTING
+                "connected" -> CONNECTION_CONNECTED
+                "connecting" -> CONNECTION_CONNECTING
+                "disconnected" -> CONNECTION_DISCONNECTED
+                "path.cameraAp" -> CONNECTION_PATH_CAMERA_AP
+                "path.phoneHotspot" -> CONNECTION_PATH_PHONE_HOTSPOT
+                "path.usb" -> CONNECTION_PATH_USB
+                "failed" -> CONNECTION_FAILED
+                "failed.wifiJoin" -> CONNECTION_WIFI_JOIN_FAILED
+                "failed.usb" -> CONNECTION_USB_FAILED
+                "failed.usbPermission" -> CONNECTION_USB_PERMISSION
+                "failed.ptp" -> CONNECTION_PTP_FAILED
+                "failed.pairing" -> CONNECTION_PAIRING_FAILED
+                "failed.reconnect" -> CONNECTION_RECONNECT_FAILED
+                "eventChannelEnded",
+                "eventChannelCleanupFailed",
+                -> CONNECTION_EVENT_CHANNEL_ENDED
+                "usb.attached.noPtpInterface" -> USB_ATTACHED_NO_PTP_INTERFACE
+                "usb.attached.needsPermission" -> USB_ATTACHED_NEEDS_PERMISSION
+                "usb.attached.permissionDenied" -> USB_ATTACHED_PERMISSION_DENIED
+                "usb.attached.noSerial" -> USB_ATTACHED_NO_SERIAL
+                "usb.attached.ready" -> USB_ATTACHED_READY
+                "usb.open.detached" -> USB_OPEN_DETACHED
+                "usb.open.noPermission" -> USB_OPEN_NO_PERMISSION
+                "usb.open.noPtpInterface" -> USB_OPEN_NO_PTP_INTERFACE
+                "usb.open.device" -> USB_OPEN_DEVICE
+                "usb.open.claim" -> USB_OPEN_CLAIM
+                "usb.open.eventEndpoint" -> USB_OPEN_EVENT_ENDPOINT
+                "usb.open.changed" -> USB_OPEN_CHANGED
+                "usb.reconnect.closedTransport" -> USB_RECONNECT_CLOSED_TRANSPORT
+                "usb.reconnect.notReady" -> USB_RECONNECT_NOT_READY
+                "usb.handshake.deviceInfo" -> USB_HANDSHAKE_DEVICE_INFO
+                "usb.handshake.openSession" -> USB_HANDSHAKE_OPEN_SESSION
+                "usb.handshake.appMode" -> USB_HANDSHAKE_APP_MODE
+                "usb.handshake.identify" -> USB_HANDSHAKE_IDENTIFY
+                "usb.handshake.write" -> USB_HANDSHAKE_WRITE
+                "usb.handshake.read" -> USB_HANDSHAKE_READ
+                "usb.handshake.timeout" -> USB_HANDSHAKE_TIMEOUT
+                "usb.handshake.closed" -> USB_HANDSHAKE_CLOSED
+                "failed.scannerRecognizer" -> SCANNER_RECOGNIZER_UNAVAILABLE
+                "failed.scannerRecognizerUnsupported" -> SCANNER_RECOGNIZER_UNSUPPORTED
+                "liveViewFailed" -> LIVE_VIEW_FAILED
+                "liveViewStalled" -> LIVE_VIEW_STALLED
+                "propertyWriteSlow" -> PROPERTY_WRITE_SLOW
+                "gate.gen1Fallback",
+                "connect.gate.gen1",
+                -> CONNECTION_GATE_GEN1_FALLBACK
+                "gate.unknownOps" -> CONNECTION_GATE_UNKNOWN_OPS
+                "join.prefix" -> CONNECTION_JOIN_PREFIX
+                else -> null
+            }
+    }
+}
+
+/** One timestamped event. No free-form value can cross this boundary. */
+internal data class DiagnosticBreadcrumb(
+    val timestampMillis: Long,
+    val event: AndroidDiagnosticEvent,
+)
+
+/** Coarse device category used in reports without manufacturer or model identity. */
+internal enum class DiagnosticDeviceClass(val label: String) {
+    PHONE("phone"),
+    TABLET("tablet"),
+}
+
+/** Closed Android process-exit reason retained without process names or descriptions. */
+internal enum class DiagnosticExitReason(val label: String) {
+    ANR("ANR"),
+    CRASH("crash"),
+    CRASH_NATIVE("native crash"),
+    DEPENDENCY_DIED("dependency died"),
+    EXCESSIVE_RESOURCE_USAGE("excessive resource use"),
+    INITIALIZATION_FAILURE("initialization failure"),
+    LOW_MEMORY("low memory"),
+    PACKAGE_STATE_CHANGE("package state change"),
+    PACKAGE_UPDATED("package updated"),
+    PERMISSION_CHANGE("permission change"),
+    SIGNALED("signal"),
+    USER_REQUESTED("user requested"),
+    USER_STOPPED("user stopped"),
+    UNKNOWN("unknown"),
+    OTHER("other"),
+}
+
+/** Coarse process importance, deliberately excluding raw Android numeric values. */
+internal enum class DiagnosticExitImportance(val label: String) {
+    FOREGROUND("foreground"),
+    VISIBLE("visible"),
+    SERVICE("service"),
+    BACKGROUND("background"),
+    CACHED("cached"),
+    UNKNOWN("unknown"),
+}
+
+/** Privacy-reduced Android 11+ historical process exit. */
+internal data class DiagnosticHistoricalExit(
+    val timestampMillis: Long,
+    val reason: DiagnosticExitReason,
+    val importance: DiagnosticExitImportance,
+)
+
+/** Closed report metadata. Version text is normalized before rendering. */
+internal data class DiagnosticReportMetadata(
+    val generatedAtMillis: Long,
+    val appVersion: String,
+    val buildNumber: Int,
+    val androidApi: Int,
+    val deviceClass: DiagnosticDeviceClass,
+)
+
+/**
+ * Z's closed app events and connect-attempt trace over OpenCine's shared [DiagnosticJournal],
+ * the owner Pocket and Insta use: callers append to a bounded in-memory ring and never wait on
+ * disk, and the journal's writer thread persists off the caller's thread.
+ *
+ * The files keep the format earlier builds wrote, so a report after an update still carries
+ * the events retained before it: `events.log` holds one `<epoch millis>|<wire value>` line per
+ * event, bounded by count and bytes, and `connect-trace.log` holds `<epoch millis> <line>`
+ * lines. Each persist atomically rewrites the bounded set from the ring, so a line the
+ * journal's queue dropped under a burst is still written by the next persist. Corrupt or
+ * hand-edited lines are ignored instead of entering the report.
+ */
+internal class DiagnosticEventStore(
+    private val eventFile: File,
+    private val maximumEventCount: Int = DEFAULT_MAXIMUM_EVENT_COUNT,
+    private val maximumEventBytes: Int = DEFAULT_MAXIMUM_EVENT_BYTES,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
+) {
+    private val events: DiagnosticJournal
+    private val connectTrace = DiagnosticJournal(CONNECT_TRACE_MAXIMUM_LINES)
+
+    /** Keeps ring order equal to timestamp order across recording threads. */
+    private val recordLock = Any()
+
+    /** Serializes the writer threads' rewrites with [flush]. */
+    private val diskLock = Any()
+
+    init {
+        require(maximumEventCount > 0) { "maximumEventCount must be positive" }
+        require(maximumEventBytes >= MINIMUM_EVENT_BYTES) {
+            "maximumEventBytes must be at least $MINIMUM_EVENT_BYTES"
+        }
+        events = DiagnosticJournal(maximumEventCount)
+        events.restore(readLines(eventFile).mapNotNull(::decodeLine).map(::encodeLine))
+        connectTrace.restore(readLines(connectTraceFile()).map(String::trim).filter(String::isNotEmpty))
+        events.startWriter { persistEvents() }
+        connectTrace.startWriter { persistConnectTrace() }
+    }
+
+    fun record(event: AndroidDiagnosticEvent) {
+        synchronized(recordLock) { events.append(encodeLine(DiagnosticBreadcrumb(nowMillis(), event))) }
+    }
+
+    /**
+     * Appends one already-sanitized connect-attempt line. Stays on the phone until
+     * the operator shares a diagnostics report or includes technical details in a
+     * problem report; never enters the activity log.
+     */
+    fun recordConnectTrace(line: String) {
+        val sanitized = line.trim()
+        if (sanitized.isEmpty() || sanitized.length > 240) return
+        if (sanitized.any { it == '\n' || it == '\r' }) return
+        synchronized(recordLock) { connectTrace.append("${nowMillis()} $sanitized") }
+    }
+
+    fun recentConnectTrace(): List<String> = connectTrace.snapshot()
+
+    fun recentEvents(): List<DiagnosticBreadcrumb> = bounded(events.snapshot()).mapNotNull(::decodeLine)
+
+    /**
+     * Returns the activity-log shape a problem report's technical details carry.
+     *
+     * Timestamps and raw local file lines are deliberately left behind. A
+     * hand-edited value such as "Bob's iPhone" cannot enter because
+     * [recentEvents] accepts only [AndroidDiagnosticEvent] wire values. Error
+     * and warning values are closed incident codes.
+     */
+    fun privacyFilteredActivityLog(): List<String> =
+        recentEvents()
+            .takeLast(ACTIVITY_LOG_MAXIMUM_EVENTS)
+            .map { event -> event.event.wireValue }
+
+    /** Writes what the rings hold now, on the caller's thread. The writers do the same off it. */
+    fun flush() {
+        persistEvents()
+        persistConnectTrace()
+    }
+
+    private fun persistEvents() {
+        synchronized(diskLock) { rewrite(eventFile, bounded(events.snapshot())) }
+    }
+
+    private fun persistConnectTrace() {
+        synchronized(diskLock) { rewrite(connectTraceFile(), connectTrace.snapshot()) }
+    }
+
+    /** The newest lines whose UTF-8 bytes, newline included, fit [maximumEventBytes]. */
+    private fun bounded(lines: List<String>): List<String> {
+        val retained = ArrayDeque<String>()
+        var retainedBytes = 0
+        for (line in lines.takeLast(maximumEventCount).asReversed()) {
+            val lineBytes = line.toByteArray(Charsets.UTF_8).size + 1
+            if (retained.isNotEmpty() && retainedBytes + lineBytes > maximumEventBytes) break
+            if (lineBytes > maximumEventBytes) continue
+            retained.addFirst(line)
+            retainedBytes += lineBytes
+        }
+        return retained.toList()
+    }
+
+    /** Atomically replaces [file] with newline-terminated [lines]; nothing to write creates no file. */
+    private fun rewrite(file: File, lines: List<String>) {
+        if (lines.isEmpty() && !file.exists()) return
+        file.parentFile?.mkdirs()
+        val payload = lines.joinToString(separator = "\n", postfix = if (lines.isEmpty()) "" else "\n")
+        val temporary = File(file.parentFile, "${file.name}.tmp")
+        temporary.writeText(payload, Charsets.UTF_8)
+        if (!temporary.renameTo(file)) {
+            temporary.copyTo(file, overwrite = true)
+            temporary.delete()
+        }
+    }
+
+    private fun readLines(file: File): List<String> =
+        if (file.isFile) runCatching { file.readLines(Charsets.UTF_8) }.getOrDefault(emptyList()) else emptyList()
+
+    private fun encodeLine(event: DiagnosticBreadcrumb): String =
+        "${event.timestampMillis}|${event.event.wireValue}"
+
+    private fun connectTraceFile(): File = File(eventFile.parentFile, "connect-trace.log")
+
+    private fun decodeLine(line: String): DiagnosticBreadcrumb? {
+        val delimiter = line.indexOf('|')
+        if (delimiter <= 0 || delimiter == line.lastIndex) return null
+        val timestamp = line.substring(0, delimiter).toLongOrNull()?.takeIf { it >= 0 } ?: return null
+        val event = AndroidDiagnosticEvent.fromWireValue(line.substring(delimiter + 1)) ?: return null
+        return DiagnosticBreadcrumb(timestamp, event)
+    }
+
+    internal companion object {
+        const val DEFAULT_MAXIMUM_EVENT_COUNT: Int = 500
+        const val DEFAULT_MAXIMUM_EVENT_BYTES: Int = 256 * 1_024
+        const val CONNECT_TRACE_MAXIMUM_LINES: Int = 200
+        const val ACTIVITY_LOG_MAXIMUM_EVENTS: Int = 200
+        private const val MINIMUM_EVENT_BYTES: Int = 128
+    }
+}
+
+/** Pure, operator-readable renderer for the privacy-bounded report. */
+internal object DiagnosticReportRenderer {
+    fun render(
+        metadata: DiagnosticReportMetadata,
+        events: List<DiagnosticBreadcrumb>,
+        historicalExits: List<DiagnosticHistoricalExit>,
+        connectTrace: List<String> = emptyList(),
+    ): String {
+        val version = normalizedVersion(metadata.appVersion)
+        val lines =
+            mutableListOf(
+                "OpenZCine Android Diagnostics",
+                "============================",
+                "",
+                "Review this file before sharing it publicly.",
+                "This local report intentionally excludes camera identities and serials, Wi-Fi",
+                "names and network addresses, media names and paths, account identities and tokens,",
+                "credentials, camera frames, arbitrary exception text, and user-entered text.",
+                "The connect-attempt trace is closed tokens only (body family, DeviceInfo",
+                "known/unknown, pairing decision) and never leaves this phone unless you share",
+                "this file.",
+                "No diagnostics are uploaded automatically by OpenZCine.",
+                "Anonymous reports can include only separately selected closed app-event and incident codes.",
+                "",
+                "Generated: ${isoTimestamp(metadata.generatedAtMillis)}",
+                "App: OpenZCine $version (build ${metadata.buildNumber.coerceAtLeast(0)})",
+                "Platform: Android API ${metadata.androidApi.coerceAtLeast(0)}, ${metadata.deviceClass.label}",
+                "",
+                "Recent app events",
+                "-----------------",
+            )
+        if (events.isEmpty()) {
+            lines += "No retained app events."
+        } else {
+            events.takeLast(DiagnosticEventStore.DEFAULT_MAXIMUM_EVENT_COUNT).forEach { event ->
+                lines += "${isoTimestamp(event.timestampMillis)}  ${event.event.wireValue}"
+            }
+        }
+        lines += ""
+        lines += "Connect attempt trace"
+        lines += "---------------------"
+        if (connectTrace.isEmpty()) {
+            lines += "No retained connect-attempt trace."
+        } else {
+            connectTrace.takeLast(DiagnosticEventStore.CONNECT_TRACE_MAXIMUM_LINES).forEach { line ->
+                lines += line
+            }
+        }
+        lines += ""
+        lines += "Historical process exits (Android 11+)"
+        lines += "--------------------------------------"
+        if (historicalExits.isEmpty()) {
+            lines += "No privacy-safe historical exit summaries are available."
+        } else {
+            historicalExits.takeLast(MAXIMUM_HISTORICAL_EXITS).forEach { exit ->
+                lines +=
+                    "${isoTimestamp(exit.timestampMillis)}  ${exit.reason.label}  ${exit.importance.label}"
+            }
+        }
+        lines += ""
+        return lines.joinToString("\n")
+    }
+
+    private fun normalizedVersion(value: String): String =
+        value.filter { character ->
+            character.isLetterOrDigit() || character in setOf('.', '+', '_', '-')
+        }.take(MAXIMUM_VERSION_LENGTH).ifEmpty { "unknown" }
+
+    private fun isoTimestamp(timestampMillis: Long): String =
+        runCatching { Instant.ofEpochMilli(timestampMillis.coerceAtLeast(0)).toString() }
+            .getOrDefault("unknown")
+
+    internal const val MAXIMUM_HISTORICAL_EXITS: Int = 8
+    private const val MAXIMUM_VERSION_LENGTH: Int = 32
+}

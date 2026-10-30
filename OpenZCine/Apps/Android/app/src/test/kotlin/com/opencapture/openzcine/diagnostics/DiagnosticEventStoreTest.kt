@@ -1,0 +1,315 @@
+package com.opencapture.openzcine.diagnostics
+
+import java.io.File
+import java.nio.file.Files
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class DiagnosticEventStoreTest {
+    @Test
+    fun `event store enforces count and byte bounds`() {
+        val file = temporaryEventFile()
+        var timestamp = 0L
+        val store =
+            DiagnosticEventStore(
+                eventFile = file,
+                maximumEventCount = 5,
+                maximumEventBytes = 180,
+                nowMillis = { ++timestamp },
+            )
+
+        repeat(20) { store.record(AndroidDiagnosticEvent.APP_FOREGROUND) }
+        store.flush()
+
+        assertEquals(5, store.recentEvents().size)
+        assertTrue(file.length() <= 180)
+        assertEquals((16L..20L).toList(), store.recentEvents().map { it.timestampMillis })
+    }
+
+    @Test
+    fun `concurrent writers remain bounded and retain only closed events`() {
+        val file = temporaryEventFile()
+        val store =
+            DiagnosticEventStore(
+                eventFile = file,
+                maximumEventCount = 64,
+                maximumEventBytes = 8_192,
+            )
+        val executor = Executors.newFixedThreadPool(8)
+
+        repeat(400) { index ->
+            executor.submit {
+                store.record(
+                    if (index % 2 == 0) {
+                        AndroidDiagnosticEvent.CONNECTION_CONNECTING
+                    } else {
+                        AndroidDiagnosticEvent.CONNECTION_CONNECTED
+                    },
+                )
+            }
+        }
+        executor.shutdown()
+        assertTrue(executor.awaitTermination(20, TimeUnit.SECONDS))
+
+        val events = store.recentEvents()
+        assertEquals(64, events.size)
+        assertTrue(
+            events.all {
+                it.event in
+                    setOf(
+                        AndroidDiagnosticEvent.CONNECTION_CONNECTING,
+                        AndroidDiagnosticEvent.CONNECTION_CONNECTED,
+                    )
+            },
+        )
+    }
+
+    @Test
+    fun `corrupt free-form lines never enter events or reports`() {
+        val file = temporaryEventFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            "1|app.launched\n" +
+                "2|camera.serial=SECRET-SERIAL\n" +
+                "3|ssid=PRIVATE-NETWORK\n" +
+                "4|exception=/private/media/clip.mov\n",
+        )
+        val store = DiagnosticEventStore(file)
+
+        val report =
+            DiagnosticReportRenderer.render(
+                metadata =
+                    DiagnosticReportMetadata(
+                        generatedAtMillis = 5,
+                        appVersion = "0.1.117",
+                        buildNumber = 117,
+                        androidApi = 33,
+                        deviceClass = DiagnosticDeviceClass.PHONE,
+                    ),
+                events = store.recentEvents(),
+                historicalExits = emptyList(),
+            )
+
+        assertEquals(listOf(AndroidDiagnosticEvent.APP_LAUNCHED), store.recentEvents().map { it.event })
+        assertTrue(report.contains("app.launched"))
+        assertFalse(report.contains("SECRET-SERIAL"))
+        assertFalse(report.contains("PRIVATE-NETWORK"))
+        assertFalse(report.contains("clip.mov"))
+    }
+
+    @Test
+    fun `activity log retains only closed event names without timestamps or device text`() {
+        val file = temporaryEventFile()
+        file.parentFile?.mkdirs()
+        file.writeText(
+            "1|app.launched\n" +
+                "2|Bob's iPhone\n" +
+                "3|app.foreground|name=Bob's iPhone\n" +
+                "4|live-view.started\n",
+        )
+        val store = DiagnosticEventStore(file)
+
+        val activityLog = store.privacyFilteredActivityLog()
+
+        assertEquals(listOf("app.launched", "live-view.started"), activityLog)
+        assertFalse(activityLog.joinToString().contains("Bob's iPhone"))
+        assertFalse(activityLog.any { it.contains('|') || it.any(Char::isDigit) })
+        assertTrue(activityLog.size <= DiagnosticEventStore.ACTIVITY_LOG_MAXIMUM_EVENTS)
+        assertTrue(activityLog.all { AndroidDiagnosticEvent.fromWireValue(it) != null })
+    }
+
+    @Test
+    fun `closed failure phases become privacy-safe incident codes`() {
+        assertEquals(
+            AndroidDiagnosticEvent.CONNECTION_FAILED,
+            AndroidDiagnosticEvent.fromPhase("failed"),
+        )
+        assertEquals(
+            AndroidDiagnosticEvent.CONNECTION_USB_FAILED,
+            AndroidDiagnosticEvent.fromPhase("failed.usb"),
+        )
+        assertEquals(
+            AndroidDiagnosticEvent.CONNECTION_PTP_FAILED,
+            AndroidDiagnosticEvent.fromPhase("failed.ptp"),
+        )
+        assertEquals(
+            AndroidDiagnosticEvent.CONNECTION_WIFI_JOIN_FAILED,
+            AndroidDiagnosticEvent.fromPhase("failed.wifiJoin"),
+        )
+        assertEquals(
+            AndroidDiagnosticEvent.CONNECTION_HANDSHAKING,
+            AndroidDiagnosticEvent.fromPhase("handshaking"),
+        )
+        assertEquals(
+            AndroidDiagnosticEvent.CONNECTION_PATH_USB,
+            AndroidDiagnosticEvent.fromPhase("path.usb"),
+        )
+        assertEquals(
+            AndroidDiagnosticEvent.CONNECTION_EVENT_CHANNEL_ENDED,
+            AndroidDiagnosticEvent.fromPhase("eventChannelEnded"),
+        )
+        assertEquals(
+            AndroidDiagnosticEvent.LIVE_VIEW_STALLED,
+            AndroidDiagnosticEvent.fromPhase("liveViewStalled"),
+        )
+        assertEquals(null, AndroidDiagnosticEvent.fromPhase("Bob's iPhone"))
+        assertEquals(null, AndroidDiagnosticEvent.fromPhase("ssid=SECRET"))
+    }
+
+    @Test
+    fun `report includes only coarse process exits and explicit privacy notice`() {
+        val report =
+            DiagnosticReportRenderer.render(
+                metadata =
+                    DiagnosticReportMetadata(
+                        generatedAtMillis = 1_000,
+                        appVersion = "0.1.117 beta!",
+                        buildNumber = 117,
+                        androidApi = 33,
+                        deviceClass = DiagnosticDeviceClass.PHONE,
+                    ),
+                events =
+                    listOf(
+                        DiagnosticBreadcrumb(900, AndroidDiagnosticEvent.LIVE_VIEW_STARTED),
+                    ),
+                historicalExits =
+                    listOf(
+                        DiagnosticHistoricalExit(
+                            timestampMillis = 800,
+                            reason = DiagnosticExitReason.ANR,
+                            importance = DiagnosticExitImportance.FOREGROUND,
+                        ),
+                    ),
+            )
+
+        assertTrue(report.contains("Android API 33, phone"))
+        assertTrue(report.contains("ANR  foreground"))
+        assertTrue(report.contains("No diagnostics are uploaded"))
+        assertTrue(report.contains("arbitrary exception text"))
+        assertTrue(report.contains("Connect attempt trace"))
+        assertFalse(report.contains("beta!"))
+    }
+
+    @Test
+    fun `connect trace stays out of the activity log`() {
+        val file = temporaryEventFile()
+        val store = DiagnosticEventStore(file, nowMillis = { 1_000 })
+        store.record(AndroidDiagnosticEvent.CONNECTION_CONNECTED)
+        store.recordConnectTrace("event=connect.gate body=z6iii inferred=three ops=unknown")
+
+        val activity = store.privacyFilteredActivityLog()
+        assertEquals(listOf("connection.connected"), activity)
+        assertFalse(activity.joinToString().contains("z6iii"))
+
+        val report =
+            DiagnosticReportRenderer.render(
+                metadata =
+                    DiagnosticReportMetadata(
+                        generatedAtMillis = 1_000,
+                        appVersion = "0.2.5",
+                        buildNumber = 1,
+                        androidApi = 34,
+                        deviceClass = DiagnosticDeviceClass.PHONE,
+                    ),
+                events = store.recentEvents(),
+                historicalExits = emptyList(),
+                connectTrace = store.recentConnectTrace(),
+            )
+        assertTrue(report.contains("body=z6iii"))
+        assertTrue(report.contains("ops=unknown"))
+    }
+
+    @Test
+    fun `manifest exposes only the dedicated diagnostics ready cache path`() {
+        val root = File(requireNotNull(System.getProperty("openzcine.repositoryRoot")))
+        val manifest = File(root, "Apps/Android/app/src/main/AndroidManifest.xml").readText()
+        val paths =
+            File(
+                root,
+                "Apps/Android/app/src/main/res/xml/diagnostics_share_paths.xml",
+            ).readText()
+
+        assertTrue(manifest.contains("\${applicationId}.diagnostics-share"))
+        assertTrue(manifest.contains("@xml/diagnostics_share_paths"))
+        assertTrue(paths.contains("path=\"$DIAGNOSTICS_READY_RELATIVE_PATH/\""))
+        assertFalse(paths.contains("path=\".\""))
+        assertFalse(paths.contains("files-path"))
+    }
+
+    private fun temporaryEventFile(): File =
+        Files.createTempDirectory("openzcine-diagnostics-test").resolve("events.log").toFile()
+
+    /**
+     * The three USB attachment failures must be distinguishable in an exported report.
+     *
+     * A declined dialog, a grant the ROM does not make stick, and a serial the ROM will not
+     * surface all left the same `error.connection.usb.permission` breadcrumb repeated, and the
+     * fix for one is not the fix for the others (field report, Android 16, build 127).
+     */
+    @Test
+    fun `usb attachment states map to distinct closed codes`() {
+        val codes =
+            listOf(
+                    "usb.attached.noPtpInterface",
+                    "usb.attached.needsPermission",
+                    "usb.attached.permissionDenied",
+                    "usb.attached.noSerial",
+                    "usb.attached.ready",
+                )
+                .map { AndroidDiagnosticEvent.fromPhase(it) }
+
+        assertEquals(codes.size, codes.toSet().size, "each state needs its own code")
+        assertTrue(codes.all { it != null })
+        assertEquals(
+            AndroidDiagnosticEvent.USB_ATTACHED_NO_SERIAL,
+            AndroidDiagnosticEvent.fromPhase("usb.attached.noSerial"),
+        )
+        // And none of them collapses into the old catch-all.
+        assertTrue(codes.none { it == AndroidDiagnosticEvent.CONNECTION_USB_PERMISSION })
+    }
+
+    /** The exported wording carries no device path, ids or serial — only the resolvable fact. */
+    @Test
+    fun `usb attachment codes name no identity`() {
+        val wording =
+            listOf(
+                    AndroidDiagnosticEvent.USB_ATTACHED_NO_PTP_INTERFACE,
+                    AndroidDiagnosticEvent.USB_ATTACHED_NEEDS_PERMISSION,
+                    AndroidDiagnosticEvent.USB_ATTACHED_PERMISSION_DENIED,
+                    AndroidDiagnosticEvent.USB_ATTACHED_NO_SERIAL,
+                    AndroidDiagnosticEvent.USB_ATTACHED_READY,
+                )
+                .map(AndroidDiagnosticEvent::wireValue)
+
+        assertTrue(wording.none { it.contains("/dev/") }, "a device path is not a diagnostic")
+        assertTrue(wording.all { it.startsWith("usb.attached.") })
+    }
+
+    @Test
+    fun `USB handshake stages map to distinct closed codes`() {
+        val codes =
+            listOf(
+                    "usb.open.claim",
+                    "usb.open.eventEndpoint",
+                    "usb.reconnect.closedTransport",
+                    "usb.handshake.deviceInfo",
+                    "usb.handshake.openSession",
+                    "usb.handshake.appMode",
+                    "usb.handshake.write",
+                    "usb.handshake.read",
+                )
+                .map { AndroidDiagnosticEvent.fromPhase(it) }
+
+        assertEquals(codes.size, codes.toSet().size, "each stage needs its own code")
+        assertTrue(codes.all { it != null })
+        assertTrue(codes.none { it == AndroidDiagnosticEvent.CONNECTION_USB_FAILED })
+        assertEquals(
+            AndroidDiagnosticEvent.USB_HANDSHAKE_WRITE,
+            AndroidDiagnosticEvent.fromPhase("usb.handshake.write"),
+        )
+    }
+}

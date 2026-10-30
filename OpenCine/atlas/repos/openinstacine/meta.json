@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "id": "openinstacine",
+  "display_name": "OpenInstaCine",
+  "status": "active",
+  "layer": "app",
+  "repository": {
+    "url": "https://github.com/erik-sutton95/OpenInstaCine",
+    "default_branch": "main"
+  },
+  "local_dir": "OpenInstaCine",
+  "refs": [
+    {
+      "name": "main",
+      "commit": "cd6c86f02e675ab2e76c0a5d8b177b458b961a37",
+      "role": "baseline"
+    },
+    {
+      "name": "opencine/integration",
+      "commit": "51086b73a7d88dcf506298b15c8b76edfa1d6798",
+      "role": "candidate"
+    },
+    {
+      "name": "pre-migration",
+      "commit": "35b6f33b20cbd791a4c24b6380046f180f1ee454",
+      "role": "candidate"
+    }
+  ],
+  "products": [
+    {
+      "name": "OpenInstaViewCore",
+      "kind": "swift-library",
+      "manifest": "Package.swift"
+    },
+    {
+      "name": "OpenInstaCineAndroid",
+      "kind": "swift-library",
+      "manifest": "Package.swift"
+    },
+    {
+      "name": "OpenInstaCine",
+      "kind": "xcode-target",
+      "manifest": "ios/project.yml"
+    },
+    {
+      "name": "OpenInstaCineWatch",
+      "kind": "xcode-target",
+      "manifest": "ios/project.yml"
+    },
+    {
+      "name": ":app",
+      "kind": "gradle-module",
+      "manifest": "Apps/Android/settings.gradle.kts"
+    },
+    {
+      "name": ":monitor",
+      "kind": "gradle-module",
+      "manifest": "Apps/Android/settings.gradle.kts"
+    }
+  ],
+  "instructions": [
+    "README.md",
+    "docs/DEVELOPMENT.md"
+  ],
+  "edges": [
+    {
+      "to": "openpocketcine",
+      "kind": "source-copy",
+      "status": "candidate",
+      "confidence": "confirmed",
+      "platforms": [
+        "apple"
+      ],
+      "scope": [
+        "Sources/MonitorPresentation",
+        "Sources/MonitorUI",
+        "Sources/OpenPocketViewCore",
+        "Sources/CJNI",
+        "Sources/OpenPocketCineAndroidFacade",
+        "Tests",
+        "ios (renamed shell)",
+        "tools (stamp-source-revision.sh, build-identity.py, pull-control-log.sh, analyze-live-log.py)"
+      ],
+      "mechanism": "scripts/sync-openpocketcine.sh (three-way apply plus brand overlays)",
+      "donor_revision": "9e306c91a4ba5d6bfa5fb2745875e8ce413089f9",
+      "evidence": {
+        "path": "docs/implementation/openpocketcine-sync-commit.txt",
+        "source_commit": "35b6f33b20cbd791a4c24b6380046f180f1ee454"
+      },
+      "note": "Luna-owned and Osmo-only files are excluded by the script. Historical pre-migration provenance; shared implementations now come from the OpenCine library edge. Residual host similarity must be measured at main, not resynced from this archived scope.",
+      "ref": "pre-migration"
+    },
+    {
+      "to": "openpocketcine",
+      "kind": "source-copy",
+      "status": "candidate",
+      "confidence": "confirmed",
+      "platforms": [
+        "android"
+      ],
+      "scope": [
+        "Apps/Android/monitor-ui",
+        "Apps/Android/monitor",
+        "Apps/Android/core-api"
+      ],
+      "mechanism": "manual copy; not covered by the sync script",
+      "donor_revision": "9e306c91a4ba5d6bfa5fb2745875e8ce413089f9",
+      "evidence": {
+        "path": "docs/DEVELOPMENT.md",
+        "source_commit": "35b6f33b20cbd791a4c24b6380046f180f1ee454"
+      },
+      "note": "Android shell recorded as synced to upstream 9e306c91. Historical pre-migration provenance; shared implementations now come from the OpenCine library edge. Residual host similarity must be measured at main, not resynced from this archived scope.",
+      "ref": "pre-migration"
+    },
+    {
+      "to": "opencine",
+      "kind": "library",
+      "status": "live",
+      "confidence": "confirmed",
+      "ref": "main",
+      "platforms": [
+        "apple",
+        "android"
+      ],
+      "products": [
+        ":appkit",
+        ":camera-controls",
+        ":camera-vocabulary",
+        ":core",
+        ":decoder",
+        ":dji",
+        ":insta360-luna",
+        ":insta360-shell",
+        ":media",
+        ":monitor-ui",
+        ":native-runtime",
+        ":platform",
+        ":vulkan",
+        "Insta360Apple",
+        "Insta360AppleTestSupport",
+        "Insta360Protocol",
+        "MonitorPresentation",
+        "MonitorUI",
+        "OpenCineAppKit",
+        "OpenCineAppKitApple",
+        "OpenCineAppUITesting",
+        "OpenCineApple",
+        "OpenCineCameraControls",
+        "OpenCineCameraVocabulary",
+        "OpenCineCore",
+        "OpenCineDJI",
+        "OpenCineFrameIO",
+        "OpenCineJNISupport",
+        "OpenCineMedia",
+        "OpenCineMotion",
+        "OpenCineRelay",
+        "OpenCineRelayApple",
+        "OpenCineWatch"
+      ],
+      "evidence": {
+        "path": "Package.swift",
+        "source_commit": "cd6c86f02e675ab2e76c0a5d8b177b458b961a37"
+      },
+      "note": "Public main consumes the one sibling OpenCine package and included Android build; exact shared revision is in opencine-pins.txt. Formal package distribution is tracked separately."
+    }
+  ],
+  "summary_review": {
+    "source_commit": "cd6c86f02e675ab2e76c0a5d8b177b458b961a37",
+    "reviewed_at": "2026-10-11T20:13:31Z"
+  }
+}

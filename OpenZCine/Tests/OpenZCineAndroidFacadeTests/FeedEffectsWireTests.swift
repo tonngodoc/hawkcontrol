@@ -1,0 +1,292 @@
+import Foundation
+import OpenZCineCore
+import Testing
+
+@testable import OpenZCineAndroidFacade
+
+/// The packed-2D payloads Compose uploads as effect textures must carry the
+/// core's cube values exactly — pixel `(x = b·size + r, y = g)` ↔ red-fastest
+/// cube index — and the scalar thresholds must be the core's, not re-derived.
+struct FeedEffectsWireTests {
+    /// RGBA of the packed pixel for cube lattice coordinates `(r, g, b)`.
+    private func packedPixel(
+        _ bytes: [UInt8], size: Int, r: Int, g: Int, b: Int
+    ) -> (red: UInt8, green: UInt8, blue: UInt8, alpha: UInt8) {
+        let offset = (g * size * size + b * size + r) * 4
+        return (bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3])
+    }
+
+    /// The wire's own quantization, so expectations share the exact rounding.
+    private func byte(_ value: Float) -> UInt8 {
+        FeedEffectsWire.quantized(value)
+    }
+
+    @Test("Packed LUT grid carries MonitorLUT cube values byte-for-value")
+    func packedLutMatchesCoreCube() throws {
+        let size = 33
+        let bytes = try #require(FeedEffectsWire.bakedLUT(lookOrdinal: 0, size: size))
+        #expect(bytes.count == size * size * size * 4)
+        let cube = MonitorLUT.log3G10Rec709.cube(size: size)
+        for (r, g, b) in [(0, 0, 0), (32, 32, 32), (16, 8, 24), (32, 0, 0), (5, 21, 13)] {
+            let index = (r + g * size + b * size * size) * 3
+            let pixel = packedPixel(bytes, size: size, r: r, g: g, b: b)
+            #expect(pixel.red == byte(cube.rgb[index]))
+            #expect(pixel.green == byte(cube.rgb[index + 1]))
+            #expect(pixel.blue == byte(cube.rgb[index + 2]))
+            #expect(pixel.alpha == 255)
+        }
+    }
+
+    @Test("Mono look bakes achromatic and neutral input maps near-identity greys")
+    func monoLookIsAchromatic() throws {
+        let size = 17
+        let bytes = try #require(FeedEffectsWire.bakedLUT(lookOrdinal: 2, size: size))
+        for (r, g, b) in [(0, 16, 8), (16, 0, 0), (4, 4, 4), (12, 3, 9)] {
+            let pixel = packedPixel(bytes, size: size, r: r, g: g, b: b)
+            #expect(pixel.red == pixel.green)
+            #expect(pixel.green == pixel.blue)
+        }
+        // Neutral axis: Rec.709 luma of an achromatic input is the input itself
+        // (±1 code for float rounding).
+        let mid = packedPixel(bytes, size: size, r: 8, g: 8, b: 8)
+        #expect(abs(Int(mid.red) - Int(byte(8.0 / 16.0))) <= 1)
+    }
+
+    @Test("False-colour grid matches the core cube and paints the documented clip zone")
+    func falseColorCubeMatchesCore() throws {
+        let bytes = try #require(FeedEffectsWire.bakedFalseColor(scaleOrdinal: 1, curveOrdinal: 0))
+        let cube = FalseColorMap.cube(
+            scale: .ire, mapping: ExposureSignalMapping(curve: .redLog3G10))
+        let size = cube.size
+        #expect(bytes.count == size * size * size * 4)
+        for (r, g, b) in [(0, 0, 0), (63, 63, 63), (40, 20, 10), (10, 40, 55)] {
+            let index = (r + g * size + b * size * size) * 3
+            let pixel = packedPixel(bytes, size: size, r: r, g: g, b: b)
+            #expect(pixel.red == byte(cube.rgb[index]))
+            #expect(pixel.green == byte(cube.rgb[index + 1]))
+            #expect(pixel.blue == byte(cube.rgb[index + 2]))
+        }
+        // Encoded 1.0 sits past the source ceiling and paints the canonical six-zone IRE red.
+        let clip = packedPixel(bytes, size: size, r: 63, g: 63, b: 63)
+        #expect(clip.red == 220)
+        #expect(clip.green == 51)
+        #expect(clip.blue == 33)
+    }
+
+    @Test("Scalars are the core's black/clip anchors and zebra thresholds")
+    func scalarsCarryCoreThresholds() throws {
+        let scalars = try #require(
+            FeedEffectsWire.scalars(curveOrdinal: 0, zebraHighlightIRE: 100, zebraMidtoneIRE: 55))
+        #expect(scalars.count == 4)
+        let mapping = ExposureSignalMapping(curve: .redLog3G10)
+        #expect(scalars[0] == Float(mapping.blackNative / 255))
+        #expect(scalars[1] == Float(mapping.clipNative / 255))
+        // Log3G10's default clip warning is native 180; monitor 100% maps onto it.
+        #expect(scalars[1] == Float(180.0 / 255.0))
+        #expect(scalars[2] == Float(mapping.signalNative(monitorPercent: 100) / 255))
+        #expect(scalars[3] == Float(mapping.signalNative(monitorPercent: 55) / 255))
+        #expect(scalars[2] > scalars[3])
+        #expect(scalars[3] > scalars[0])
+    }
+
+    @Test("Camera mapping and renderer record follow the shared N-Log low-ISO policy")
+    func cameraAwareRendererRecordUsesCoreMapping() throws {
+        let mapping = ExposureSignalMapping.camera(codec: "N-Log", iso: 200, baseISO: nil)
+        let payload = FeedEffectsWire.cameraMappingPayload(codec: "N-Log", iso: 200, baseISO: nil)
+        #expect(
+            payload == [
+                1,
+                Float(mapping.blackNative),
+                Float(mapping.middleGrayNative),
+                Float(mapping.clipNative),
+            ])
+
+        let render = try #require(
+            FeedEffectsWire.renderConfiguration(
+                codec: "N-Log", iso: 200, baseISO: nil,
+                peakingSensitivityOrdinal: 2, peakingColorOrdinal: 1,
+                highlightEnabled: false, highlightIRE: 96, highlightColorOrdinal: 3,
+                midtoneEnabled: true, midtoneIRE: 42, midtoneColorOrdinal: 4))
+        #expect(render.count == FeedEffectsWire.renderConfigurationFieldCount)
+        #expect(render[0] == 1)
+        #expect(render[1] == 200)
+        // Ordinal 2 = High: the shared-core detector constants, uploaded verbatim. One table now,
+        // shared with iOS — Android used to carry a second set for its own operator.
+        #expect(render[7] == Float(Peaking.Sensitivity.high.ratioThreshold))
+        // A log movie feed takes the gate unscaled; the stills case is asserted below.
+        #expect(render[8] == Float(Peaking.Sensitivity.high.noiseGate))
+        #expect(render[12] == 0)
+        #expect(render[17] == 1)
+        #expect(render[13] == Float(mapping.signalNative(monitorPercent: 96) / 255))
+        #expect(render[18] == Float(mapping.signalNative(monitorPercent: 42) / 255))
+        let blue = Peaking.Color.blue.rgb
+        #expect(Array(render[9...11]) == [Float(blue.0), Float(blue.1), Float(blue.2)])
+    }
+
+    @Test("Photo selector swaps the movie log mapping for the display-referred stills one")
+    func stillsToneModeOverridesTheMovieCodecMapping() throws {
+        // The movie codec would resolve R3D NE → Log3G10; an active photo selector wins.
+        let sdr = FeedEffectsWire.cameraMappingPayload(
+            codec: "R3D NE", iso: 800, baseISO: nil, stillsToneMode: "SDR")
+        let srgb = ExposureSignalMapping.stills(toneMode: "SDR")
+        #expect(
+            sdr == [
+                2, Float(srgb.blackNative), Float(srgb.middleGrayNative), Float(srgb.clipNative),
+            ])
+
+        let hlg = FeedEffectsWire.cameraMappingPayload(
+            codec: "R3D NE", iso: 800, baseISO: nil, stillsToneMode: "HLG")
+        #expect(hlg[0] == 3)
+
+        // Photo selector active before the tone-mode read lands → the sRGB default.
+        let unreported = FeedEffectsWire.cameraMappingPayload(
+            codec: "R3D NE", iso: 800, baseISO: nil, stillsToneMode: "")
+        #expect(unreported[0] == 2)
+
+        // Movie mode (nil) keeps the codec-derived log mapping untouched.
+        let movie = FeedEffectsWire.cameraMappingPayload(
+            codec: "R3D NE", iso: 800, baseISO: nil, stillsToneMode: nil)
+        #expect(movie[0] == 0)
+
+        let render = try #require(
+            FeedEffectsWire.renderConfiguration(
+                codec: "R3D NE", iso: 800, baseISO: nil, stillsToneMode: "HLG",
+                peakingSensitivityOrdinal: 1, peakingColorOrdinal: 0,
+                highlightEnabled: true, highlightIRE: 96, highlightColorOrdinal: 0,
+                midtoneEnabled: false, midtoneIRE: 42, midtoneColorOrdinal: 0))
+        #expect(render[0] == 3)
+        let hlgMapping = ExposureSignalMapping.stills(toneMode: "HLG")
+        #expect(render[1] == Float(hlgMapping.clipNative))
+        #expect(render[13] == Float(hlgMapping.signalNative(monitorPercent: 96) / 255))
+        // Peaking's de-log (render[2...6]) follows the ACTIVE mode's curve — HLG here, not the
+        // hardcoded Log3G10 that made photography peaking differ from video.
+        for i in 0...4 {
+            let expected = Float(
+                ExposureScale.referenceIRE(
+                    signalNative: Double(i) / 4 * 255, curve: hlgMapping.curve) / 100)
+            #expect(render[2 + i] == expected)
+        }
+        // The other half of that fix: the ratio threshold is transfer-curve invariant so it does
+        // not move, but the noise gate is an absolute magnitude and a display-referred preview
+        // hands the detector larger gradients — so the gate carries the mode correction, exactly
+        // as iOS's `PeakingSettings.gateScale` does. Without this a sensitivity step meant
+        // something stricter in photography than in video, which is the reported symptom.
+        #expect(render[7] == Float(Peaking.Sensitivity.medium.ratioThreshold))
+        #expect(
+            render[8]
+                == Float(
+                    Peaking.Sensitivity.medium.noiseGate
+                        * Peaking.gateScale(
+                            gradientScale: Peaking.displayReferredGradientScale)))
+        #expect(render[8] > Float(Peaking.Sensitivity.medium.noiseGate))
+    }
+
+    @Test("Limits cubes preserve a separate paint and mask while reference bands stay core-owned")
+    func limitsPayloadsAreAvailable() throws {
+        let paint = try #require(
+            FeedEffectsWire.bakedFalseColorLimitsPaint(curveOrdinal: 0, clipNative: 180))
+        let weight = try #require(
+            FeedEffectsWire.bakedFalseColorLimitsWeight(curveOrdinal: 0, clipNative: 180))
+        #expect(paint.count == 64 * 64 * 64 * 4)
+        #expect(weight.count == paint.count)
+        let reference = try #require(
+            FeedEffectsWire.falseColorReference(scaleOrdinal: 2, curveOrdinal: 0, clipNative: 180))
+        #expect(reference[0] == 1)
+        #expect(reference[1] == 0)
+        #expect(reference[2] == 4)
+        #expect(reference[3] == 0)
+        #expect(reference.count == 4 + Int(reference[2]) * 5)
+    }
+
+    @Test("Stable scale ordinals distinguish CineStop, IRE, Limits and Video")
+    func stableScaleOrdinals() throws {
+        for (ordinal, scale) in [(0, FalseColorScale.stops), (1, .ire), (2, .limits), (3, .video)] {
+            let reference = try #require(
+                FeedEffectsWire.falseColorReference(
+                    scaleOrdinal: ordinal, curveOrdinal: 1, clipNative: 200))
+            #expect(
+                Int(reference[2])
+                    == scale.bands(
+                        mapping: ExposureSignalMapping(
+                            curve: .nikonNLog, clipNative: 200)
+                    ).count)
+            #expect(reference[3] == (scale == .stops ? 7 : 0))
+        }
+        #expect(
+            FeedEffectsWire.bakedFalseColor(scaleOrdinal: 3, curveOrdinal: 1, clipNative: 200)
+                != nil)
+    }
+
+    @Test("709 ordinal projection reaches cubes, Limits masks and reference clip geometry")
+    func readProjection() throws {
+        let log = try #require(
+            FeedEffectsWire.bakedFalseColor(
+                scaleOrdinal: 3, curveOrdinal: 1, clipNative: 200))
+        let rec709 = try #require(
+            FeedEffectsWire.bakedFalseColor(
+                scaleOrdinal: 7, curveOrdinal: 1, clipNative: 200))
+        #expect(log != rec709)
+        let logMask = try #require(
+            FeedEffectsWire.bakedFalseColorLimitsWeight(
+                curveOrdinal: 1, clipNative: 200))
+        let rec709Mask = try #require(
+            FeedEffectsWire.bakedFalseColorLimitsWeight(
+                curveOrdinal: 5, clipNative: 200))
+        #expect(logMask != rec709Mask)
+        let logReference = try #require(
+            FeedEffectsWire.falseColorReference(
+                scaleOrdinal: 0, curveOrdinal: 1, clipNative: 200))
+        let rec709Reference = try #require(
+            FeedEffectsWire.falseColorReference(
+                scaleOrdinal: 4, curveOrdinal: 1, clipNative: 200))
+        #expect(logReference[1] == 1 && rec709Reference[1] == 1)
+        #expect(logReference != rec709Reference)
+        #expect(FeedEffectsWire.bakedFalseColor(scaleOrdinal: 8, curveOrdinal: 1) == nil)
+        #expect(
+            FeedEffectsWire.bakedFalseColorLimitsWeight(curveOrdinal: 8, clipNative: 200) == nil)
+    }
+
+    @Test("Unknown ordinals and unsupported sizes are rejected")
+    func unknownOrdinalsAreRejected() {
+        // 0–3 are the built-in looks; 4 is the first ordinal no `FeedLut` case claims.
+        #expect(FeedEffectsWire.bakedLUT(lookOrdinal: 4, size: 33) == nil)
+        #expect(FeedEffectsWire.bakedLUT(lookOrdinal: 0, size: 65) == nil)
+        #expect(FeedEffectsWire.bakedFalseColor(scaleOrdinal: 2, curveOrdinal: 0) == nil)
+        #expect(FeedEffectsWire.bakedFalseColor(scaleOrdinal: 0, curveOrdinal: 5) == nil)
+        #expect(
+            FeedEffectsWire.scalars(curveOrdinal: 9, zebraHighlightIRE: 100, zebraMidtoneIRE: 55)
+                == nil)
+    }
+}
+
+// Byte-for-byte original payload evidence, recorded before the shared look extraction.
+// Environment paths are test-run artifacts; no production behavior depends on them.
+@Test(
+    .enabled(
+        if: ProcessInfo.processInfo.environment["GENERATED_LOOK_PAYLOADS_RECORD"] != nil
+            || ProcessInfo.processInfo.environment["GENERATED_LOOK_PAYLOADS_VERIFY"] != nil)
+)
+func generatedLookPayloadsMatchRecordedOriginals() throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard
+        let directory = environment["GENERATED_LOOK_PAYLOADS_RECORD"]
+            ?? environment["GENERATED_LOOK_PAYLOADS_VERIFY"]
+    else {
+        return
+    }
+    let root = URL(fileURLWithPath: directory, isDirectory: true)
+    if environment["GENERATED_LOOK_PAYLOADS_RECORD"] != nil {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+    for size in [2, 17, 33, 64] {
+        for ordinal in 0...3 {
+            let actual = try #require(FeedEffectsWire.bakedLUT(lookOrdinal: ordinal, size: size))
+            let file = root.appendingPathComponent("look-\(ordinal)-\(size).rgba")
+            if environment["GENERATED_LOOK_PAYLOADS_RECORD"] != nil {
+                try Data(actual).write(to: file, options: .atomic)
+            } else {
+                #expect(Data(actual) == (try Data(contentsOf: file)))
+            }
+        }
+    }
+}

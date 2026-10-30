@@ -1,0 +1,445 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+This beta is a parity and reliability update built on the shared OpenCine
+foundation. Camera setup, monitor chrome, settings, View Assist, media and
+playback share more components and behavior across the OpenCapture apps while
+retaining Nikon's stills, video and Multicam controls.
+
+### Parity and reliability update
+
+- Shared setup, settings, assist and media components keep iOS and Android
+  behavior aligned. Landscape groups colour with codec and puts the accent on
+  codec; portrait keeps shots, storage and link indicators clear of the cutout.
+- DISP 3 uses the live surface's REC chip, hero timecode and setting tiles, with
+  tap-to-edit and hold-to-reorder controls. It is available in video mode.
+- Instant review uses embedded RAW previews, appears sooner across exposure
+  modes and turns RAW+JPEG previews sharp. A tap in continuous drive takes one
+  frame; a hold starts the burst.
+- Photo mode disables the video LUT and video mode restores it. Shots remaining
+  and app-triggered captures follow the stills card.
+- The GYRO pill does not cover the lock, logging starts only in video mode, and
+  tap-to-focus during a focus drive no longer leaves the camera busy.
+- iOS readouts and frame timecode survive warm Live View restarts and Quality
+  Bias changes. Recovery preserves the camera's photo/video mode.
+- Saved-camera connections can wake an unseen body. Take-over asks first,
+  explicit Wi-Fi retries ask again, and abandoned setup work is cancelled.
+- After a take-over, the phone that lost the camera stops for good: it no longer
+  reconnects from its old live view, sends nothing more to the camera, stops
+  saying it holds it and drops the contradictory "Reconnecting" pill.
+- Media sharing keeps photo options separate from video export and completes
+  pending copies before sharing. Playback stays paused after app return.
+- Download from RED in the clip player opens over the clip at once instead of
+  after the clip closes.
+- iOS improves shutter VoiceOver wording, hides collapsed assist controls from
+  accessibility and requests Local Network access at the setup permission step.
+- Android restores pairing guards and can save the watcher passcode without a
+  connected camera. Phone and Wear OS remain part of the same release train.
+- A dozing body that drops off the network is woken and dialled once more on
+  iOS and Android; a silent body still ends with the asleep-or-off-network copy.
+- The iOS FPS chip uses the shared link words (LINK until the first picture,
+  then the frame rate) and no longer shows READY or BUSY.
+- Media on large cards no longer freezes iOS, playback stays paused after Share,
+  and VoiceOver no longer reaches live controls under a covering screen.
+- Android no longer freezes while the live picture rebuilds after rotating or
+  returning to the app.
+- Shared diagnostics distinguish transport, decoding and display incidents for
+  investigating dropouts without claiming every dropout has been eliminated.
+
+The final camera/device walkthrough, including stills review, continuous drive,
+connection recovery and supported cable/capture paths, remains required before
+the next external beta.
+
+### Added
+
+- DISP 3 (the command dashboard) returns in the shared live view's style on iOS and Android: the
+  record chip heads it again, with the hero timecode (frames in the accent) when the body runs
+  timecode, in the live view's type and with larger tiles. DISP stays 1, 2, 3 in video and 1, 2 in photo.
+
+- Live View and Multicam preserve Nikon frame timecode when it is reported by
+  the camera, including frame zero. Cameras without frame timecode keep their
+  seconds display; no frame rate is guessed.
+
+- **New app icon** (iOS + Android).
+- **Multicam** (iOS + Android): the grid button on Your cameras opens a stage of four tiles;
+  add up to four bodies over USB-C, a router or the phone's hotspot (a camera's own access point
+  cannot join). Grid or Center stage, name, battery, timecode and record tally on every tile,
+  ISO and white balance of the selected camera, and one Record for all. Each camera reports its
+  own result ("2 of 3 rolling. C didn't start."), and nothing is stopped because another camera
+  failed. A tile opens that camera's full Live View on its open link; Return to Multicam hands it
+  back. Built on the shared OpenCine multicam engine and monitor UI.
+- **Share This Feed** (iOS + Android): broadcast the monitor to other devices on set and watch
+  another device's, with per-watcher scopes and LUTs, an optional passcode, and camera-control
+  handoff — one holder at a time, requested on the broadcaster's own screen, and control now
+  survives a brief network blink instead of dying with the socket. Hardware HEVC with automatic
+  JPEG fallback for devices whose decoders refuse the stream.
+- **One camera, many setups** (iOS + Android): each way of reaching a body — its own access
+  point, a router (several, told apart by network), a phone hotspot, the cable — is a saved
+  setup of its own, shown as tabs on the camera's row and individually renameable. Stream
+  preset and quality bias are remembered per setup.
+- **Both landscape orientations on iPhone**: the picture and controls swap sides on rotation so
+  nothing hides behind the Dynamic Island, and the flip lands mid-session without any
+  interaction. (iPad already had both; its second-landscape focus-recall button placement is
+  fixed as part of the same work.)
+- **Vertical camera mode** (iOS + Android): turn the body on its side and the picture follows,
+  in video and photo, with a portrait layout built for it.
+- **Auto-Rotate Feed switch** (iOS + Android): turn off upright rotation of the monitoring
+  image when the camera is on its side. On by default, under Settings → Controls; the
+  recording is never affected.
+- **Pinch-to-zoom on the live view** (iOS + Android), replacing the fixed 2×/3×/4× magnifier;
+  tap-to-focus follows the zoom.
+- **Feed processing** (iOS): a Feed Upscaler (Off / Fast / Quality / AI) and temporal Feed Noise
+  Reduction, plus a hardware JPEG decode for the live picture.
+- **HDMI capture as a picture source** — iPadOS via USB capture devices, Android via CameraX —
+  while camera control continues over the normal link.
+- **Camera clock sync** (iOS + Android): a body whose clock has drifted more than five seconds
+  is set to the phone's time on connect — automatically, never while recording, and never on an
+  unreadable value.
+- **Apple Watch photo mode**: shutter, image-area preview and shots-remaining on the wrist; the
+  crown magnifies the preview and a drag pans it.
+- **Clean view (DISP 2) tool set** (iOS + Android): the tools that make a clean picture —
+  peaking, zebra, guides — ship enabled on the clean display mode.
+- **Slow-motion conform preview** for high-frame-rate clips: pick the rate the edit will conform
+  to and watch the clip at that speed, stated in full (`60 → 24 fps · 40%`). Real time stays the
+  default, audio is muted while a conform runs, and the clip itself is never touched. Where the
+  source cannot be trusted — unknown rate, variable frame rate — the control says why instead of
+  showing a plausible wrong speed.
+- **A visible clean-view button in playback**, hiding every non-essential control. The swipe-down
+  gesture still works; the button makes it discoverable. A tap on the picture always brings the
+  controls back.
+- **Anamorphic de-squeeze in photo mode** — live view, instant playback and the media-page still
+  viewer, with the same presets and custom 1.00–2.00× ratio the cinema path uses. Display only:
+  the camera original and any export are unchanged.
+
+- **Photography (stills) mode** (iOS + Android): dedicated stills chrome with a real shutter
+  (hold-to-burst in continuous drives, tap-to-AF, bulb/time), built-in and app self-timers, and
+  capture-bar pickers for mode (incl. U1–U3), ISO Auto, focus mode/area/subject, drive, white
+  balance, size, quality (RAW + JPEG/HEIF), and picture profile (incl. downloaded cloud profiles).
+  Portrait photography layout, an EV meter fed by the body's exposure indicator, and photo-mode
+  scopes/false color that read the stills preview (sRGB or HLG).
+- **Focus dial**: on-feed manual focus-by-wire pull in **photo and video** mode (iOS + Android) — a
+  relative near↔infinity drum, toggled in the FOCUS popup, decoupled from the command tick so it
+  tracks the finger. Off by default; an operator's explicit choice is preserved. The release
+  preserves the dialed focus (no re-AF).
+- **Burst series**: continuous-drive frames group into one stack that opens to a full-screen
+  scrubbing pager with multi-select delete/share, spanning both cards.
+- **Body-fired capture sync**: shots released on the camera body register in the app (shutter
+  animation + instant playback), read via the camera's event poll rather than the PTP-IP event
+  socket.
+- **Instant playback** assist (iOS + Android): the last shot reviews full screen — thumb first,
+  full image streaming in — with an optional focus point frozen at capture, capture info, and an
+  in-place favorite star written to the card.
+- **Keep a view-assist tool visible in clean view.** Every tool now carries a per-tool clean-view
+  pin in Settings ▸ Display, so an operator who wants (say) the histogram or the delivery guides on
+  the otherwise bare DISP 2 image can keep exactly that one. Off for every tool by default. Both
+  platforms.
+- Playback and live **desqueeze**: scales the picture (not only guides), with 1.6× and custom
+  1.00–2.00× (0.01 steps) on iOS and Android.
+- **Auto ISO** for non-R3D movie codecs (N-RAW / ProRes / H.26x): Auto On/Off controls movie ISO
+  auto (not P/A/S/M). Live working ISO while Auto is on (e.g. A51200); manual / Auto Off only in
+  exposure mode **M**. R3D NE keeps Low/High dual-base and stays manual in every exposure mode.
+- USB-C tethered transport (iOS, via ImageCaptureCore): USB camera discovery, connection,
+  auto-reconnect on plug-in, and a transport-aware first-pair wizard with real USB-C setup steps.
+  Wi-Fi (PTP-IP) and USB-C now share one session layer behind a transaction-level
+  `CameraTransport` boundary. Hardware verification on the ZR is pending.
+- Third-party license notices (`THIRD-PARTY-NOTICES.md`) and an app privacy policy page
+  (<https://opencapture.org/openzcine/privacy/>).
+- Contributor guide for running the app without camera hardware (demo session).
+- TestFlight CI: automated upload on merge to `main`, centralized iOS versioning, and maintainer setup
+  docs (`docs/testflight-ci.md`).
+- Repository foundation: governance docs, tooling (`just`, meta-checks), native CI, and agent
+  configuration.
+
+### Fixed
+
+- Photo mode shows remaining shots as a picture glyph and the count (`20.2k` above four digits,
+  never rounded up) instead of "SHOTS", and the portrait header keeps the signal indicator clear of
+  the Dynamic Island or camera cutout (iOS + Android). VoiceOver and TalkBack read the full count.
+
+- Completed cached clips open from a fresh offline media library on iOS and Android.
+
+- Media gallery taps remain valid after the active source changes or reconnects.
+- Apple progressive clip playback reads only transferred bytes, waits at a
+  temporary end of data and resumes the requested speed when data arrives.
+  An operator pause prevents a late refill from restarting playback, and transfer
+  failures are reported without deleting the partial clip.
+- Nikon media transfers keep 64-bit file sizes and resume offsets. Extended
+  reads and full-size queries require the camera's advertised operations;
+  unsupported or invalid transfers fail before appending data. Older local
+  clips without size metadata keep their cached-media and export information.
+
+- **Record confirmation runs the start or stop you confirmed** (iOS): answering "Start
+  recording?" or "Stop recording?" used to recompute the toggle, so a take started or stopped on
+  the body while the prompt was open was inverted. Every record entry point (button,
+  confirmation, Apple Watch, Bluetooth remote, relay viewer) now resolves once to an explicit
+  start or stop, and a target the camera already reports is not sent again.
+- **A refused record puts the button back** (iOS): when the camera refuses a record (no card,
+  card full), Record returns to the state the camera reports.
+- **Android commands reach their own camera**: every session call is addressed to its connection
+  owner, so a stale or unknown connection gets no session instead of falling through to the
+  last-connected camera. Media browse, playback, transfer and delivery name that owner too.
+- **Frame.io stays signed in across token refreshes** (iOS): when Adobe IMS refreshes an access
+  token without returning a new refresh token, the app keeps the one it has instead of dropping
+  it and asking for a new sign-in at the next expiry. A Frame.io account, folder or file ID with
+  a path or query character is now refused before any request is sent. The Frame.io workflow is
+  now the shared OpenCineFrameIO one; the saved sign-in (keychain item `OpenZCine.frameio`) is
+  unchanged, so nobody has to log in again.
+- **FPS readout after a stale frame** (iOS): an out-of-order or repeated frame timestamp no
+  longer rewinds the frame-rate window, so the next frame cannot report a bogus interval (the
+  sampler is now the shared OpenCineMedia one).
+- **Android USB reconnect no longer fails the attempt that unwedged the pipe.** A
+  dead first bulk-out (`USB wrote -1 of 12 bytes`, the GetDeviceInfo command) already
+  issued a PTP Device Reset, but still returned failure so every reconnect showed
+  the error. That write is now retried once on the same attempt. Android-only; iOS
+  USB goes through ImageCaptureCore.
+- **Z 6III USB product names are no longer treated as an original Z 6.** Nikon's USB
+  iProduct `NIKON DSC Z6_3` (and `Z 6_2` / `Z5_2`) was compacted to `Z63` and matched
+  generation 1, so a missed DeviceInfo probe skipped pairing and wrote the gen-1
+  ApplicationMode property — the camera-side connection error in Discussion #12.
+  Camera AP setups that cannot derive an SSID from a Z 6III name now prefix-join a
+  Nikon camera network instead of skipping the join. Share Diagnostics includes a
+  local-only connect-attempt trace (body family, DeviceInfo known/unknown, pairing
+  decision) that never leaves the phone unless the operator shares the file.
+- **Original Z 6 / Z 5 / Z 7 connect no longer sends pairing or ChangeApplicationMode when
+  DeviceInfo is missing.** Those bodies have no pairing handshake; polling it is what put a
+  wireless error on the camera and left the app connecting. The PTP-IP name or USB product name
+  now selects the gen-1 app-mode property write instead. iOS USB also probes GetDeviceInfo
+  before OpenSession, matching Android. Cable-pairing copy on iPad no longer says iPhone.
+- **Aperture-priority (and other auto-exposure) shutter and ISO no longer sit stale.** Nikon
+  often does not announce those camera-owned changes on `DevicePropChanged`, so after the first
+  #268 fix a photo A-mode body could show 1/30 · ISO 1000 while the app still read 1/125 · A900.
+  The shared core now re-reads the camera-owned ISO / shutter / iris set on a bounded cadence —
+  one property per tick, skipped entirely in M + manual ISO — and both shells use it. Operator
+  dials still jump the queue when the body does announce them.
+- **Photo-mode FOCUS and tap-to-focus no longer borrow the movie AF mode.** The capture strip
+  was reading the movie leftover, so it showed AF-F or an em dash while the Focus panel — which
+  already used the stills setting — confirmed AF-S. A video tap could then fire the one-shot
+  AF drive that AF-S needs against a body still in AF-F. Each chrome now reads and drives only
+  its own side; a missing readout stays "—" instead of a synthetic AF-F. Both platforms.
+- **A focus-dial pull that overruns the readiness poll no longer wedges tap-to-focus.** The poll
+  ceiling used to count as success while a native Z STM lens was still moving, so the next
+  AF-area change answered busy until a half-press on the body. The in-flight drive is now
+  aborted and the channel is freed. Both platforms.
+- Native Share and Save to Photos no longer fail with AVFoundation `Invalid sample cursor` on
+  Nikon proxy clips. Export now strips the camera timecode track before the session, uses the
+  stable export path, and restores timecode afterwards (iOS).
+- LUT-baked Share, Save to Photos, and Frame.io finish a playable file when a Nikon proxy's
+  media data is shorter than the header (iOS). Those clips still failed with `Invalid sample
+  cursor` after #343 because the reader threw before `finishWriting`; export now treats that as
+  end-of-readable-media, writes the `moov`, and the progress bar follows the readable duration.
+- Save to Photos asks for library access before the long export, then shows “Saving to Photos…”
+  with a spinner while Photos ingests the file (iOS). The bar used to freeze mid-percent through
+  the permission prompt and the save, looking like a hang.
+- Playback Share is available while the camera is connected. The delivery run caches the clip
+  from the camera first; disconnecting and opening Operator Setup media is no longer required
+  (iOS and Android).
+- A stills-side focus-mode event no longer repaints the movie FOCUS readout or makes feed taps
+  fire a one-shot AF drive on a body running continuous AF — the two modes were decoding into
+  one field, last writer wins (both platforms).
+- Android settings popups can always be closed — the X, tap-outside and Back no longer go dead
+  while a slow camera write is in flight.
+- An Android camera-access-point reconnect discovers the camera's address after joining instead
+  of dialling the saved placeholder — which surfaced as "IPv4 address must be numeric" on
+  bodies whose address was never learned.
+- A watcher granted camera control can actually start and stop recording, and screen-recording
+  on the broadcaster no longer walks the watcher's picture progressively behind live.
+- Fixed a crash that could end a live session mid-take when the temporal noise filter handed
+  the video pipeline fewer reference frames than it was configured for (M4 iPads).
+
+- **Media filters match the tab you are on.** The filter popup offered the same chips everywhere,
+  so the Photos tab advertised MOV, MP4, and HD/4K/5.4K/6K — none of which a still can ever be, and
+  nothing that describes one. Chips are now derived from the listing in front of the operator:
+  Photos offers **JPEG / HEIF / NEF** and an **L / M / S** size row, Videos keeps its containers and
+  resolution buckets, and DATE gained **7 days** and **30 days** beside Today. A chip only appears
+  when it matches something in the tab *and* excludes something, so no row ever advertises a value
+  that would return an empty grid or filter nothing at all; stills whose dimensions the camera never
+  reported get no size row rather than a dead one. Switching tabs clears any chip the new tab cannot
+  offer, so a MOV filter carried onto Photos no longer empties the grid with nothing to explain it.
+  Both platforms.
+
+- **Nikon HEIF stills (`.HIF`) show up in the media browser.** The shared classifier knew `.heif`
+  and `.heic` but not the extension a Z body actually writes, so every HEIF on the card was treated
+  as an unsupported object and never listed at all. Both platforms.
+
+- **A dropped camera no longer needs an app restart, and a stalled first connect no longer needs
+  a cancel.** A failed connection attempt now disposes exactly as thoroughly as tapping Cancel —
+  the single-flight latch is released with the attempt it belonged to, so an immediate retry is
+  never silently swallowed while an abandoned attempt unwinds. Every machine-driven connection
+  phase has a truthful bounded timeout (phases that wait on a person stay unbounded), and the
+  failed connection card gained **Try again**. When an established session drops — USB cable
+  knocked loose, camera powered off and on, wedged command channel — the operator now stays in
+  live view on the last frame (clearly marked as held, not live) while a bounded, cancellable
+  reconnect runs, then gets **Retry connection** / **Operator menu**. The retry rule lives in the
+  shared core, so both shells retry, back off, and give up identically. Both platforms.
+
+- **A change made on the camera reaches the app promptly, in every mode.** Field testing found the
+  first fix incomplete in two ways. The Nikon event queue that carries `DevicePropChanged` was only
+  polled in photography chrome — it had inherited the chrome test from the body-fired-stills
+  consumer, which applies that test itself — so cinema mode had no fast path at all and fell back
+  to a round-robin that revisits any one property roughly every 20 s. Over USB, where there is no
+  event socket, nothing else could have covered it. Separately the read itself was gated to that
+  same background cadence, so a change the app had already *heard about* still waited out a poll
+  interval sized for idle work; a pending announcement now shortens the stride until it drains,
+  bounded so a continuously-announcing body cannot turn the loop into a per-frame round trip.
+  Both platforms.
+
+- **A pulled USB-C cable ends the session it belongs to.** Only the device-level removal callback
+  was wired to teardown, and on a cable pull it did not fire, so the event stream stayed open and
+  nothing raised recovery — Wi-Fi worked only because a dead socket fails on its own. Two further
+  faults made it wedge rather than merely go quiet: closing the transport never resumed the
+  in-flight transaction, so the shutdown that reconnect waits on queued behind a completion that
+  never came; and the stall counter measured wall clock spent in the attempt rather than time
+  spent streaming, so against a dead link every attempt reset the streak and escalation was never
+  reached. iOS; the Android host already had all three legs.
+
+- **The H.265 picker no longer collapses 8-bit and 10-bit.** A body advertising both wore one
+  "H.265" row backed by whichever value came first, so leaving H.265 and returning to it silently
+  landed on 8-bit. The depth is now chosen with **8-bit / 10-bit buttons flanking the codec row**,
+  the same idiom as white balance's −10 / +10, and only for codecs the connected body actually
+  advertises at more than one depth — a single-variant codec keeps a plain row and no buttons. The
+  exact advertised value is what gets written, and the lit depth comes from the camera's own
+  readback, so it survives closing and reopening the picker. Both platforms.
+- **Pickers mirror the connected body instead of a fixed list of Nikon Z values.** Exposure mode,
+  drive, focus mode/area/subject, metering, flash, image quality, NEF compression and picture
+  control now come from the camera's own descriptors — its values, in its order. A body without
+  user modes is no longer offered U1/U2/U3, drive reads in the body's release order (Single, CL,
+  CH, CH+), and reconnecting or swapping cameras rebuilds every list from the new body.
+- **Focus-area and subject-detection names match the camera's.** 3D tracking and subject tracking
+  are AF-area modes and are now named as such, so neither reads as the separate subject-detection
+  control beside it.
+- **Clean view (DISP 2) is genuinely clean.** Scopes, traffic lights, the status deck, the side
+  rails, feed overlays and pop-ups all stayed up, because every surface decided for itself what
+  clean meant. One shared rule now answers that question for both shells. Clean shows the image
+  and nothing else — apart from four deliberate exceptions: camera fault and thermal/card warnings,
+  the recording tally, the record control while a take is rolling, and the DISP key itself (the way
+  back out). Any tool can be pinned back on per tool. Both platforms.
+- **Every monitor element is its own switch, per DISP mode and per capture side.** The right rail
+  was one preference, so record, Media, Settings and DISP — the things most operators want gone —
+  had no control at all; the AF box and two status-bar cells had none either. All of them are
+  configurable now, and **DISP 2 offers exactly the same list as DISP 1**, with different defaults:
+  the image, the rail, the focus box and the batteries on, everything else off. Video and photo
+  keep separate layouts, chosen with one switch at the top of the Display tab. Nothing can be
+  locked from the inside: the record control returns while a take is rolling, the Settings key
+  returns when no enabled DISP mode carries one, the lock key returns whenever controls are locked,
+  and the feed swipe changes DISP mode with no key at all. Both platforms.
+- **The top bar obeys the switches.** Clean hard-coded its deck down to timecode and FPS, so the
+  Edit view showed CODEC and MEDIA badges, the operator switched them on, and closing the editor
+  dropped them again. The portrait bar honoured none of the per-cell switches at all. Both read
+  the same configuration as the landscape deck now. Both platforms.
+- **Command view (DISP 3) no longer freezes the timecode.** It hid the image and ended live view to
+  keep the camera cool — but timecode only exists in the live-view frame header, so the dashboard's
+  hero clock stopped at whatever the last frame before the switch carried, which looks plausible
+  and is wrong while the camera is rolling. Command now keeps the stream at the smallest frame the
+  body offers and reads only its header, skipping decode, display and analysis. Wi-Fi and USB.
+  Both platforms.
+- **Focus peaking now tracks the focus plane.** It measured edge contrast, which scales with how
+  bright an edge is as much as with how sharp it is — so a defocused specular highlight outranked
+  genuinely sharp low-contrast detail, painting background bokeh while skipping the subject. It
+  now measures blur radius (a two-scale gradient ratio), which is independent of contrast.
+  Separately, peaking ran on a stretch that flattened the top of the range, so in-focus highlight
+  detail could never register at all. Measured against a real focus sweep from the camera, a fully
+  defocused frame now paints nothing at all.
+- **Peaking behaves the same on iPhone and on Android, and the same in photo mode as in video.**
+  The two platforms were running detectors that only resembled each other, each with its own
+  thresholds, so "Med" did not mean the same thing on a phone as on an iPhone. There is now one
+  detector definition that both render. And because the photography feed is a display-referred
+  preview rather than log, the same scene used to read as sharper in photo mode than in video —
+  a sensitivity step silently meant something stricter in one mode than the other. Both platforms
+  now correct for the feed's encoding. One difference remains: Android does not yet smooth the
+  finished overlay the way iOS does, so at the same setting it reads slightly grainier.
+- Android: the media page no longer crawls after the first long-press — selecting one item used to
+  make every later tap re-hash the whole library, and stale hit-test rectangles could send a tap to
+  an off-screen item.
+- Android: the shutter no longer re-focuses when focus was set with the focus dial, matching iOS.
+- Android: star ratings write to the card as they always did — the star's tap target was far
+  smaller than the minimum and gave no press feedback, so taps missed silently.
+- Android USB-C: a camera error or unplug during a tethered session could crash the app instead of
+  ending the session. The camera-event reader could re-arm a transfer the system still owned; it now
+  hands each one back before starting the next, and an unrecoverable event channel closes the USB
+  session cleanly.
+- **Android: the Wi-Fi detail scanner no longer disables itself over one bad frame, and pairing
+  always has a manual path.** The bundled text recogniser loads its model lazily on the first frame,
+  so the client looks healthy and the *frames* fail; the analyser turned that very first failure
+  into a permanent "recogniser unavailable" and "Try again" re-entered the same one-strike loop. It
+  now tolerates a warm-up, distinguishes a permanent incompatibility from a temporary one, and keeps
+  a privacy-safe failure category in local diagnostics instead of discarding the cause. Android also
+  had **no manual SSID/key entry at all** — the first-pair wizard always opened the scanner, so a
+  failed scan dead-ended pairing entirely; it now reuses the shared core's credential validation,
+  the same one iOS has always had.
+- **The focus dial no longer stalls or blocks tap-to-focus.** A refused focus drive retried by
+  count, and each attempt could spend seconds polling the camera for readiness — so one drag could
+  own the single camera command channel long enough that the body answered every AF-area change
+  "busy", leaving both the dial and tap-to-focus dead until a shutter release. Refusals are now
+  budgeted by wall clock, a tap or recenter pre-empts an in-flight drive, and an AF-area change
+  retries a busy body instead of dropping the tap. Both platforms.
+- Starting tap-to-focus no longer hitches the live view: the AF-confirmation poll ran inside the
+  frame loop and stalled it for about half a second.
+
+- Media: backup (two-card) shots appear under both slots and delete every copy; context-aware
+  delete copy and companion handling (RAW+JPEG pairs; a video plus its R3D/NEV master); EXIF
+  auto-rotation; and a batch-delete progress bar that refreshes the grid once at the end.
+- Instant playback freezes the reviewed shot's focus box at capture time, so it no longer drifts if
+  the AF point moves while the preview loads.
+
+### Changed
+
+- **New monitor interface** (iOS + Android): the live monitor, camera list,
+  settings and media player use the shared OpenCine interface. Saved camera
+  setups and display preferences retain their existing storage.
+- **Assist toolbar** (iOS + Android): shared icons and short captions such as
+  PEAK, FALSE and WAVE, with tap-to-toggle and hold-for-options interaction.
+- **Grouped movie formats** (iOS + Android): image area where applicable,
+  resolution and eligible frame rates come from the camera's advertised choices.
+  FX/DX is shown for applicable Nikon formats; codec remains a separate control.
+  No unsupported resolution and rate combinations are generated.
+- **Focus recenter button** (iOS + Android): a circular-arrow icon returns the
+  focus point to the center, retaining the camera's existing tracking rules.
+- **Your cameras and pairing on the shared OpenCine pages** (iOS + Android): one card per camera
+  with a chip per setup, connect progress, prompts and failures on the card (Try again, Take over
+  a camera another device holds, Share diagnostics), and NEARBY cameras on this network. The
+  pairing wizard and the app's own connects run on the shared pair page instead of a full-screen
+  card. Saved setups, Wi-Fi keys and pairings carry over, and an older build still reads them.
+- **ISO, white balance and record go through one camera session** (iOS + Android), shared with
+  the other OpenCine apps. Requested and reported values are kept apart, each write is confirmed
+  by reading the camera back, and record is an explicit start or stop that waits for the camera's
+  report and times out without inventing state. A value the camera parked on (Auto ISO at 51200,
+  for example) stays writable when leaving Auto.
+- **Record from Apple Watch or a Bluetooth shutter is refused while a watcher holds camera
+  control** (iOS). These presses used to go through.
+- **HDMI capture on iPad** renders a frame only when the monitor takes it, off the main thread,
+  and drops frames from a capture device that was unplugged or swapped. No visible change
+  intended.
+- The Nikon PTP wire, properties and session policy (OpenCineNikon), LUT parsing, the frame-rate
+  sampler and the HDMI capture source now come from the shared OpenCine package. The Runner
+  and Watch link the `OpenZCineCore` product instead of compiling its sources.
+- A weak or congested wireless link now degrades the picture instead of dropping the session,
+  on both platforms; the Android live path also sheds several per-frame costs (GPU re-uploads,
+  redundant copies, background-priority decode) and holds Wi-Fi in low-latency mode during a
+  wireless session.
+- New installs start on the Fast feed upscaler rather than the heaviest available.
+
+- The **star rating in playback** moved from a permanent band above the transport to a shade at the
+  top of the picture: tap the star handle to reveal the stars, tap it again to put them away. They
+  stay put until you do. The handle only appears when a camera is connected, since the rating is
+  written to the card. Both platforms.
+
+- The **Focus dial** is available in video mode as well as photo mode, and is now **off by default**
+  on a new install. An operator who already switched it on (or off) keeps that choice.
+
+- Google Play **internal** uploads automate like TestFlight: merge Android-relevant paths to `main`
+  builds and uploads phone + Wear AABs when `PLAY_UPLOAD_ENABLED=true` (see
+  `docs/android-distribution.md`). Manual dispatch and `android-v*` tags remain.
+- Android control writes: facade owns encode + native confirm; shell no longer soft-fails after a
+  successful apply (see `docs/android-control-writes.md`).
+- TestFlight notes are now reviewed, tester-written copy with concrete test steps. CI rejects stale
+  notes, commit titles, and common implementation jargon before an iOS build can ship.
+
+### Security
+
+- All GitHub Actions in CI are pinned to full commit SHAs, and Docker-based actions to image
+  digests, to prevent tag-hijack supply-chain attacks.

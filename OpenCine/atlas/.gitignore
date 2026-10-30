@@ -1,0 +1,6 @@
+# Machine-local configuration: checkout paths, task notes, dirty overlays.
+.local/
+
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,13 @@
+import MonitorPresentation
+
+public typealias MonitorFeedLayout = MonitorPresentation.MonitorFeedLayout
+public typealias MonitorLiveViewGeometrySpace = MonitorPresentation.MonitorLiveViewGeometrySpace
+public typealias MonitorLiveViewViewport = MonitorPresentation.MonitorLiveViewViewport
+public typealias MonitorModuleFrame = MonitorPresentation.MonitorModuleFrame
+public typealias MonitorSideRailControlLayout = MonitorPresentation.MonitorSideRailControlLayout
+public typealias StartupLayoutMargins = MonitorPresentation.StartupLayoutMargins
+public typealias StartupLayoutProfile = MonitorPresentation.StartupLayoutProfile
+public typealias StartupContentMode = MonitorPresentation.StartupContentMode
+public typealias StartupContentLayout = MonitorPresentation.StartupContentLayout
+public typealias StartupReadyLiveViewPolicy = MonitorPresentation.StartupReadyLiveViewPolicy
+public typealias StartupDiscoveryPrimaryAction = MonitorPresentation.StartupDiscoveryPrimaryAction
