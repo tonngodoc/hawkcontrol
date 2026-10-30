@@ -15,7 +15,7 @@ let package = Package(
     dependencies: [
         .package(path: "../.."),
         // The version the apps shipped.
-        .package(url: "https://github.com/getsentry/sentry-cocoa", exact: "9.24.0"),
+        .package(url: "https://github.com/getsentry/sentry-cocoa", exact: "9.26.0"),
     ],
     targets: [
         // iOS source; empty elsewhere.

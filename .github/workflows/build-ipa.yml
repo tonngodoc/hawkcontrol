@@ -44,6 +44,11 @@ jobs:
           set -euo pipefail
           mkdir -p build
 
+          echo "===> Resolving Swift Packages..."
+          xcodebuild -project OpenZCine/ios/Runner.xcodeproj \
+            -scheme Runner \
+            -resolvePackageDependencies
+
           echo "===> Compiling HawkControl (Runner scheme)..."
           xcodebuild -project OpenZCine/ios/Runner.xcodeproj \
             -scheme Runner \
