@@ -154,7 +154,10 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]),
         // Apple runtime: decoded-frame leases, VideoToolbox decoder, UVC capture source. Every
         // file sits behind `#if canImport(...)`; Core and Media never depend on it.
-        .target(name: "OpenCineApple", dependencies: ["OpenCineCore", "OpenCineMedia", "OpenCineAppleObjC"]),
+        .target(
+            name: "OpenCineApple",
+            dependencies: ["OpenCineCore", "OpenCineMedia", "OpenCineAppleObjC"],
+            swiftSettings: [.swiftLanguageMode(.v5)]),
         // The Objective-C calls Swift cannot make safely (a framework method that raises an
         // NSException is called inside @try). Foundation, Metal and VideoToolbox only; empty
         // where they do not exist. Internal to OpenCineApple: no product, nothing else imports it.
@@ -199,9 +202,15 @@ let package = Package(
         // The Apple side of the app shell both camera apps share (head tracking, the watcher's
         // Wi-Fi join code, the HDR display state). App differences arrive as host values and
         // protocols; iOS only, empty elsewhere.
-        .target(name: "OpenCineAppKitApple", dependencies: ["OpenCineAppKit", "MonitorUI", "OpenCineApple", "OpenCineMedia", "OpenCineMotion", "OpenCineRelay", "OpenCineRelayApple"]),
+        .target(
+            name: "OpenCineAppKitApple",
+            dependencies: ["OpenCineAppKit", "MonitorUI", "OpenCineApple", "OpenCineMedia", "OpenCineMotion", "OpenCineRelay", "OpenCineRelayApple"],
+            swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "OpenCineAppKitAppleTests", dependencies: ["OpenCineAppKitApple", "OpenCineAppKit", "OpenCineMotion", "OpenCineApple", "OpenCineMedia", "MonitorUI"]),
-        .target(name: "OpenCineFrameIOApple", dependencies: ["OpenCineFrameIO", "OpenCineAppKit", "OpenCineAppKitApple"]),
+        .target(
+            name: "OpenCineFrameIOApple",
+            dependencies: ["OpenCineFrameIO", "OpenCineAppKit", "OpenCineAppKitApple"],
+            swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(
             name: "OpenCineFrameIOAppleTests",
             dependencies: ["OpenCineFrameIOApple", "OpenCineFrameIO", "OpenCineAppKit", "OpenCineAppKitApple"]),
@@ -212,7 +221,8 @@ let package = Package(
             dependencies: [
                 "OpenCineCameraVocabulary", "MonitorUI", "MonitorPresentation", "OpenCineAppKit", "OpenCineAppKitApple",
                 "OpenCineApple", "OpenCineMedia", "OpenCineMotion", "OpenCineGyro", "OpenCineGyroApple",
-            ]),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "OpenCineCameraControlsTests", dependencies: ["OpenCineCameraControls", "OpenCineHostedAccessibility"]),
         // XCUITest cases that drive an app only by accessibility identifiers and the typed review
         // launch (MonitorPresentation `ReviewLaunch`); iOS only, empty elsewhere
@@ -262,7 +272,10 @@ let package = Package(
         // MARK: Nikon
         // PTP/IP and PTP/USB wire, property codes, discovery/session policy and
         // NikonCameraSession (OpenCineCore.CameraSession over the app's NikonControlDriver).
-        .target(name: "OpenCineNikon", dependencies: ["OpenCineCore", "OpenCineMedia", "OpenCineCameraVocabulary", "OpenCineGyro"]),
+        .target(
+            name: "OpenCineNikon",
+            dependencies: ["OpenCineCore", "OpenCineMedia", "OpenCineCameraVocabulary", "OpenCineGyro"],
+            swiftSettings: [.swiftLanguageMode(.v5)]),
         // OpenCineMulticam is a test-only dependency: the multi-body tests run real
         // `NikonCameraSession`s through the shared engine. The library itself stays Core-only.
         .testTarget(

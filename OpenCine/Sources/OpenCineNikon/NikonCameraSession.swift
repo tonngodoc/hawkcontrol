@@ -541,7 +541,7 @@ public final class NikonCameraSession: CameraSession {
                 old?.remainingRecordingTime, origin: .estimated))]
     }
 
-    public static func batteryFraction(_ rawBatteryLevel: Int) -> Double? {
+    public nonisolated static func batteryFraction(_ rawBatteryLevel: Int) -> Double? {
         let gauge = NikonCameraBatteryGauge.gauge(rawBatteryLevel: rawBatteryLevel)
         return gauge == .unknown ? nil : Double(gauge.filledBars) / Double(NikonCameraBatteryGauge.barCount)
     }

@@ -16,10 +16,6 @@ public enum MonitorHDRDisplay {
         if layer.colorspace?.name != name {
             layer.colorspace = name.flatMap { CGColorSpace(name: $0) }
         }
-        if #available(iOS 26.0, *) {
-            let range: CALayer.DynamicRange = enabled ? .high : .automatic
-            if layer.preferredDynamicRange != range { layer.preferredDynamicRange = range }
-        }
     }
 }
 #endif
