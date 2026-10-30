@@ -24,11 +24,11 @@ struct OpenZCineWordmark: View {
     var body: some View {
         VStack(alignment: .leading, spacing: fontSize * 0.18) {
             Text("OpenZCine")
-                .font(.system(size: fontSize, weight: .bold, design: .rounded))
+                .font(.system(size: fontSize, weight: .bold, design: .monospaced))
                 .foregroundStyle(BrandColors.ink)
             if let subtitle {
                 Text(subtitle)
-                    .font(.system(size: fontSize * 0.38, weight: .medium, design: .rounded))
+                    .font(.system(size: fontSize * 0.38, weight: .medium, design: .monospaced))
                     .foregroundStyle(BrandColors.muted)
             }
         }

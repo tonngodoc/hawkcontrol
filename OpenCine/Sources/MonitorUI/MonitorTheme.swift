@@ -98,7 +98,15 @@
         /// Font resources travel with the engine; a new app does not copy font files
         /// or add Info.plist entries. Register once, never in a video-frame callback.
         public static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-            return .system(size: size, weight: weight, design: .default)
+            _ = registeredFonts
+            let face: String
+            switch weight {
+            case .bold, .heavy, .black: face = "Bold"
+            case .semibold: face = "SemiBold"
+            case .medium: face = "Medium"
+            default: face = "Regular"
+            }
+            return .custom("JetBrainsMono-\(face)", size: size)
         }
 
         /// App entry points may prewarm resources before constructing a SwiftUI tree.
@@ -108,7 +116,7 @@
 
         private static let registeredFonts: Void = {
             for face in ["Regular", "Medium", "SemiBold", "Bold"] {
-                if let url = Bundle.module.url(forResource: "Sora-\(face)", withExtension: "ttf") {
+                if let url = Bundle.module.url(forResource: "JetBrainsMono-\(face)", withExtension: "ttf") {
                     CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
                 }
             }

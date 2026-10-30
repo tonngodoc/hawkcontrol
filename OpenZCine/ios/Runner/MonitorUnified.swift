@@ -887,7 +887,7 @@ struct SplitComparisonKey: View {
             OperatorSettingsHaptics.selection(enabled: model.preferences.hapticsEnabled)
         } label: {
             Text("50/50")
-                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(model.splitComparisonMuted ? LiveDesign.muted : LiveDesign.accent)
                 .frame(width: 44, height: 30)
                 .background(.black.opacity(0.55), in: Capsule())

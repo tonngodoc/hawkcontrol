@@ -372,11 +372,14 @@ public struct MonitorSettingsControlsSource {
     let recordConfirmation: Binding<Bool>
     let haptics: MonitorSettingsToggle
     let keepAwake: MonitorSettingsToggle
+    let directDownloadOnly: Binding<Bool>?
     let input: MonitorSettingsInputSource?
     let motion: MonitorSettingsMotionSource?
     public init(recordConfirmation: Binding<Bool>, haptics: MonitorSettingsToggle, keepAwake: MonitorSettingsToggle,
+        directDownloadOnly: Binding<Bool>? = nil,
         input: MonitorSettingsInputSource? = nil, motion: MonitorSettingsMotionSource? = nil) {
         self.recordConfirmation = recordConfirmation; self.haptics = haptics; self.keepAwake = keepAwake
+        self.directDownloadOnly = directDownloadOnly
         self.input = input; self.motion = motion
     }
 }

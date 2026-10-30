@@ -6,18 +6,21 @@ public struct MonitorOperatorSafetySettings: View {
     @Binding private var recordConfirmation: Bool
     @Binding private var haptics: Bool
     @Binding private var keepScreenAwake: Bool
+    private var directDownloadOnly: Binding<Bool>?
     private let hapticsHelp: String
     private let keepScreenAwakeHelp: String
     private let feedback: () -> Void
 
     public init(
         recordConfirmation: Binding<Bool>, haptics: Binding<Bool>, keepScreenAwake: Binding<Bool>,
+        directDownloadOnly: Binding<Bool>? = nil,
         hapticsHelp: String = "Short confirmation pulses for switches, settings and controls.",
         keepScreenAwakeHelp: String = "Prevents auto-lock while this app is open. A monitor should stay lit.",
         feedback: @escaping () -> Void = {}
     ) {
         self._recordConfirmation = recordConfirmation; self._haptics = haptics
-        self._keepScreenAwake = keepScreenAwake; self.hapticsHelp = hapticsHelp
+        self._keepScreenAwake = keepScreenAwake; self.directDownloadOnly = directDownloadOnly
+        self.hapticsHelp = hapticsHelp
         self.keepScreenAwakeHelp = keepScreenAwakeHelp; self.feedback = feedback
     }
 
@@ -31,6 +34,13 @@ public struct MonitorOperatorSafetySettings: View {
                 isOn: haptics, feedback: feedback) { haptics.toggle() }
             MonitorSettingsSwitchInlineRow(title: "Keep screen awake", help: keepScreenAwakeHelp,
                 isOn: keepScreenAwake, feedback: feedback) { keepScreenAwake.toggle() }
+            if let directDownloadOnly {
+                MonitorSettingsSwitchInlineRow(
+                    title: "Direct download only",
+                    help: "Tapping a clip downloads it directly to device without buffering playback.",
+                    isOn: directDownloadOnly.wrappedValue, feedback: feedback
+                ) { directDownloadOnly.wrappedValue.toggle() }
+            }
         }
     }
 }

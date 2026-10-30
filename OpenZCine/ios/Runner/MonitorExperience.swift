@@ -337,7 +337,19 @@ private struct LiveFrameRaster: View {
             qualification: { [weak model] in model?.nativeQualificationSnapshot }
         )
         .scaleEffect(feedScale, anchor: .center)
+        .animation(.spring(duration: 0.35), value: isZoomed916)
         .clipped()
+        .onTapGesture(count: 2) {
+            withAnimation(.spring(duration: 0.35)) {
+                let current = isZoomed916
+                model.is916FullScreen = !current
+                model.preferences.portraitFeedAspect = !current ? .fill : .fit16x9
+            }
+        }
+    }
+
+    private var isZoomed916: Bool {
+        model.is916FullScreen || model.preferences.portraitFeedAspect == .fill
     }
 
     /// De-squeeze and mirror are the same kind of thing — a transform of the raster alone — so they
@@ -351,9 +363,15 @@ private struct LiveFrameRaster: View {
     /// handled where they are drawn.
     private var feedScale: CGSize {
         let squeeze = desqueezeScale(model.liveDesqueeze)
-        return MirrorAssist.feedScale(
+        var scale = MirrorAssist.feedScale(
             mirrored: model.liveFeedMirrored,
             flippedVertically: model.liveFeedMirroredVertically, squeeze: squeeze)
+        if isZoomed916 {
+            let zoom: CGFloat = 3.16
+            scale.width *= zoom
+            scale.height *= zoom
+        }
+        return scale
     }
 }
 
@@ -623,7 +641,7 @@ struct RelayJoinRecovery: View {
         if let reason = model.relayFailureReason {
             VStack(spacing: 10) {
                 Text(reason)
-                    .font(.system(size: 12, weight: .regular, design: .rounded))
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(LiveDesign.text.opacity(0.55))
                     .fixedSize(horizontal: false, vertical: true)
@@ -634,7 +652,7 @@ struct RelayJoinRecovery: View {
                         model.retryRelayJoin()
                     } label: {
                         Text("Try again")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
                             .foregroundStyle(LiveDesign.text.opacity(0.8))
                             .padding(.horizontal, 18)
                             .padding(.vertical, 8)
@@ -699,7 +717,7 @@ private struct RelayJoinPasscodeEntry: View {
                 .submitLabel(.join)
                 .onSubmit(join)
                 .multilineTextAlignment(.center)
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .font(.system(size: 17, weight: .semibold, design: .monospaced))
                 .foregroundStyle(LiveDesign.text.opacity(0.9))
                 .frame(width: 150)
                 .padding(.vertical, 8)
@@ -707,7 +725,7 @@ private struct RelayJoinPasscodeEntry: View {
                 .focused($focused)
                 .onAppear { focused = true }
             Button("Join", action: join)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
                 .foregroundStyle(LiveDesign.text.opacity(0.8))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)

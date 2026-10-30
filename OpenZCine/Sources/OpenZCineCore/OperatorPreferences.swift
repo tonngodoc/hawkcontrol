@@ -407,7 +407,8 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
         photoCommandChrome: DisplayChromeVisibility = DisplayChromeVisibility(),
         relayEncoderProfile: RelayEncoderProfile = .lowLatency,
         relayWatcherPasscode: String = "",
-        relayAllowsControlRequests: Bool = true
+        relayAllowsControlRequests: Bool = true,
+        directDownloadOnly: Bool = false
     ) {
         self.dispOrder = dispOrder
         self.enabledDispModes = Self.normalizedEnabledDispModes(enabledDispModes)
@@ -429,6 +430,7 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
         self.relayEncoderProfile = relayEncoderProfile
         self.relayWatcherPasscode = relayWatcherPasscode
         self.relayAllowsControlRequests = relayAllowsControlRequests
+        self.directDownloadOnly = directDownloadOnly
     }
 
     /// Stock defaults — forwards to ``defaults``.
@@ -450,6 +452,8 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
     public var bluetoothShutterEnabled: Bool
     public var hapticsEnabled: Bool
     public var keepScreenAwake: Bool
+    /// When true, tapping a clip downloads it directly to device without buffering playback.
+    public var directDownloadOnly: Bool
     /// Turns the monitoring image upright from the body's live-view orientation. Off keeps the
     /// picture in the camera's native landscape sensor orientation. Display only — the recording
     /// is never affected.
@@ -551,6 +555,7 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
         case photoDisplayChrome, photoCleanChrome, photoCommandChrome
         case relayEncoderProfile
         case relayWatcherPasscode, relayAllowsControlRequests
+        case directDownloadOnly
     }
 
     public init(from decoder: any Decoder) throws {
@@ -643,6 +648,8 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
             (try? container.decodeIfPresent(String.self, forKey: .relayWatcherPasscode)) ?? ""
         relayAllowsControlRequests =
             (try? container.decodeIfPresent(Bool.self, forKey: .relayAllowsControlRequests)) ?? true
+        directDownloadOnly =
+            (try? container.decodeIfPresent(Bool.self, forKey: .directDownloadOnly)) ?? false
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -667,6 +674,7 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
         try container.encode(relayEncoderProfile, forKey: .relayEncoderProfile)
         try container.encode(relayWatcherPasscode, forKey: .relayWatcherPasscode)
         try container.encode(relayAllowsControlRequests, forKey: .relayAllowsControlRequests)
+        try container.encode(directDownloadOnly, forKey: .directDownloadOnly)
     }
 
     public static let defaults = OperatorPreferences(
@@ -677,6 +685,7 @@ public struct OperatorPreferences: Codable, Equatable, Sendable {
         hapticsEnabled: true,
         keepScreenAwake: true,
         autoRotateFeedEnabled: true,
+        directDownloadOnly: false,
         // The smallest preset is ~320x240 — too little real detail for the focus and exposure
         // assists to read, and most of what a detector finds there is compression structure
         // rather than the lens. Default to the largest stream the body will send; the operator

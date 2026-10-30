@@ -267,7 +267,17 @@ struct MediaBrowserView: View {
         } else if clip.mediaKind == .photo {
             photo = request
         } else {
-            playing = request
+            if model.preferences.directDownloadOnly {
+                if model.isClipDownloaded(clip) {
+                    playing = request
+                } else {
+                    Task {
+                        _ = await model.cacheClipFromCamera(clip)
+                    }
+                }
+            } else {
+                playing = request
+            }
         }
     }
     private func begin() {

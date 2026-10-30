@@ -225,7 +225,8 @@ public struct MonitorOperatorSettingsScreen<Payload: Sendable, Looks: MonitorLoo
             if let gyro = source.gyro { MonitorSettingsGyroCard(gyro: gyro, feedback: source.feedback) }
         case .safety:
             MonitorOperatorSafetySettings(recordConfirmation: controls.recordConfirmation, haptics: controls.haptics.value,
-                keepScreenAwake: controls.keepAwake.value, hapticsHelp: controls.haptics.help,
+                keepScreenAwake: controls.keepAwake.value, directDownloadOnly: controls.directDownloadOnly,
+                hapticsHelp: controls.haptics.help,
                 keepScreenAwakeHelp: controls.keepAwake.help, feedback: source.feedback)
         case .input:
             if let input = controls.input {

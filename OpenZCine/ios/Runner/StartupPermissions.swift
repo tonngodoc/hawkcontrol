@@ -285,7 +285,7 @@ struct StartupWizardPermissionsStep: View {
             if !coordinator.allRequiredGranted {
                 Text("Required to reach your camera over Wi‑Fi. Allow it to continue.")
                     .font(
-                        .system(size: style.isTight ? 11 : 12, weight: .regular, design: .rounded)
+                        .system(size: style.isTight ? 11 : 12, weight: .regular, design: .monospaced)
                     )
                     .foregroundStyle(MonitorTheme.faint)
                     .fixedSize(horizontal: false, vertical: true)

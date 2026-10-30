@@ -517,7 +517,7 @@ struct DrumSideAdjustButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundStyle(
                     selected
                         ? LiveDesign.background : (enabled ? LiveDesign.accent : LiveDesign.faint)
@@ -1134,6 +1134,7 @@ struct OperatorSettingsPanel: View {
                 keepAwake: .init(
                     value: preferenceBinding(\.keepScreenAwake),
                     help: MonitorSettingsCopy.keepScreenAwake),
+                directDownloadOnly: preferenceBinding(\.directDownloadOnly),
                 input: .init(
                     remoteShutter: .volumeButtons(
                         enabled: preferenceBinding(\.bluetoothShutterEnabled)),

@@ -23,7 +23,7 @@ struct PhotographyShutterButton: View {
                 .frame(width: size - 17, height: size - 17)
             if let countdown {
                 Text("\(countdown)")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .font(.system(size: 30, weight: .bold, design: .monospaced))
                     .foregroundStyle(.black)
                     .contentTransition(.numericText(countsDown: true))
             } else if timerArmed {

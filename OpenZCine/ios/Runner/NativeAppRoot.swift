@@ -1121,6 +1121,8 @@ final class NativeAppModel {
         didSet { LiveHDRDisplay.app.setScreenCaptured(screenCaptured) }
     }
     var hdrDisplayActive: Bool { hdrDisplay && !screenCaptured }
+    /// Concert 9:16 vertical full-screen center-crop zoom toggle.
+    var is916FullScreen: Bool = false
     /// The app's one internet hop (A2-16): the shared owner over the Nikon Wi‑Fi joiner.
     @ObservationIgnored lazy var internetHop = MonitorInternetHop<NikonHopRoute>(
         port: .init(
