@@ -1,0 +1,111 @@
+name: Build HawkControl iOS IPA
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ipa:
+    name: Build Unsigned IPA
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout HawkControl
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Prepare build environment
+        run: |
+          mkdir -p OpenZCine/ios/Runner
+          cat << 'EOF' > OpenZCine/ios/Runner/Frameio.local.xcconfig
+          FRAMEIO_CLIENT_ID =
+          FRAMEIO_REDIRECT_URI =
+          FRAMEIO_URL_SCHEME =
+          EOF
+          cat << 'EOF' > OpenZCine/ios/Runner/Reliability.local.xcconfig
+          SENTRY_DSN =
+          EOF
+
+      - name: Build and Archive iOS App
+        run: |
+          set -euo pipefail
+          mkdir -p build
+
+          echo "===> Compiling HawkControl (Runner scheme)..."
+          xcodebuild -project OpenZCine/ios/Runner.xcodeproj \
+            -scheme Runner \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/HawkControl.xcarchive" \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            archive || {
+              echo "Archive failed, falling back to direct build..."
+              xcodebuild -project OpenZCine/ios/Runner.xcodeproj \
+                -scheme Runner \
+                -configuration Release \
+                -destination 'generic/platform=iOS' \
+                -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+                -skipMacroValidation \
+                -skipPackagePluginValidation \
+                CODE_SIGNING_ALLOWED=NO \
+                CODE_SIGNING_REQUIRED=NO \
+                CODE_SIGN_IDENTITY="" \
+                build
+            }
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          mkdir -p Payload
+
+          APP_PATH=""
+          if [ -d "$RUNNER_TEMP/HawkControl.xcarchive/Products/Applications/Runner.app" ]; then
+            APP_PATH="$RUNNER_TEMP/HawkControl.xcarchive/Products/Applications/Runner.app"
+          elif [ -d "$RUNNER_TEMP/HawkControl.xcarchive/Products/Applications/OpenZCine.app" ]; then
+            APP_PATH="$RUNNER_TEMP/HawkControl.xcarchive/Products/Applications/OpenZCine.app"
+          elif [ -d "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/Runner.app" ]; then
+            APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/Runner.app"
+          elif [ -d "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/OpenZCine.app" ]; then
+            APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/OpenZCine.app"
+          fi
+
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::Could not find compiled .app bundle"
+            find "$RUNNER_TEMP" -name "*.app" -type d
+            exit 1
+          fi
+
+          echo "Found app bundle at: $APP_PATH"
+          cp -R "$APP_PATH" Payload/
+
+          # Remove embedded watch content so personal free Apple IDs sideload smoothly without watch provisioning errors
+          rm -rf Payload/*.app/Watch || true
+
+          zip -qr HawkControl.ipa Payload
+          echo "HawkControl.ipa successfully created ($(du -h HawkControl.ipa | cut -f1))"
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HawkControl-v0.2.5-unsigned-ipa
+          path: HawkControl.ipa
+          retention-days: 14
